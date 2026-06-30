@@ -1,0 +1,20 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+
+# local cache / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.log
+.cache/
+
+# virtual environments
+venv/
+.venv/
+env/
+
+# editor/local settings
+.claude/settings.local.json
