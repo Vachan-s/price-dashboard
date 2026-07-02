@@ -234,6 +234,7 @@
         <p class="ajio-refresh-note">To update TenXYou prices, run <code>python scrapers/tenxyou_search.py</code> in terminal first.</p>
         <p class="ajio-refresh-note">To update Myntra prices, run <code>python scrapers/myntra_search.py</code> in terminal first.</p>
         <p class="ajio-refresh-note">To update Ajio prices, run <code>python scrapers/ajio_search.py</code> in terminal first.</p>
+        <p class="ajio-refresh-note">To update Amazon prices, run <code>python scrapers/amazon_search.py</code> in terminal first.</p>
       </div>
       <button id="btn-export">Export CSV</button>
     </div>
@@ -253,6 +254,7 @@
           <th>TenXYou Price</th>
           <th>Myntra Price</th>
           <th>Ajio Price</th>
+          <th>Amazon Price</th>
           <th>Gap</th>
           <th>Status</th>
         </tr>
@@ -336,10 +338,11 @@
       const tPrice  = r.tenxyou_price    ?? null;
       const mPrice  = r.myntra_price     ?? null;
       const aPrice  = r.ajio_price       ?? null;
+      const azPrice = r.amazon_price     ?? null;
       const lowComp = r.lowest_comp_price ?? null;
 
-      // Find lowest non-null price across all three for green highlight
-      const allPrices = [tPrice, mPrice, aPrice].filter(p => p !== null);
+      // Find lowest non-null price across all four for green highlight
+      const allPrices = [tPrice, mPrice, aPrice, azPrice].filter(p => p !== null);
       const minPrice  = allPrices.length ? Math.min(...allPrices) : null;
 
       const lowCompFmt = lowComp !== null ? formatPrice(lowComp) : '—';
@@ -350,6 +353,7 @@
         <td>${priceCell(tPrice, minPrice)}</td>
         <td>${priceCell(mPrice, minPrice)}</td>
         <td>${priceCell(aPrice, minPrice)}</td>
+        <td>${priceCell(azPrice, minPrice)}</td>
         <td>${gapHtml(tPrice, lowComp)}</td>
         <td>${statusHtml}</td>
       </tr>`;

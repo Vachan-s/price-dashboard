@@ -9,7 +9,7 @@ A Flask-based price comparison dashboard that scrapes live prices for TenXYou pr
 - Scrapes product listings from Myntra and Ajio search pages using Playwright
 - Scrapes TenXYou's own site via sitemap + Playwright
 - Matches each SKU from the internal product catalogue to the closest marketplace listing using URL-slug fuzzy matching (Jaccard similarity)
-- Displays TenXYou price, Myntra price, Ajio price, GAP % (vs lowest competitor), and match confidence per SKU in a web dashboard
+- Displays TenXYou price, Myntra price, Ajio price, Amazon price, GAP % (vs lowest competitor), and match confidence per SKU in a web dashboard
 - Exports results to CSV
 
 ---
@@ -27,7 +27,7 @@ Python 3.12+ recommended.
 
 ## Daily workflow
 
-Run the three search scrapers to refresh the price cache, then trigger the dashboard scrape:
+Run the four search scrapers to refresh the price cache, then trigger the dashboard scrape:
 
 ```bash
 # 1. Refresh TenXYou prices (uses headless browser via sitemap)
@@ -39,7 +39,10 @@ python scrapers/myntra_search.py
 # 3. Refresh Ajio prices (opens a visible Chrome window — let it scroll)
 python scrapers/ajio_search.py
 
-# 4. Start the dashboard
+# 4. Refresh Amazon prices (opens a visible Chrome window)
+python scrapers/amazon_search.py
+
+# 5. Start the dashboard
 python app.py
 # → open http://localhost:5000 and click "Scrape Now"
 ```
@@ -87,5 +90,6 @@ The fuzzy matcher will attempt to find the closest listing on each marketplace b
 - **Fuzzy matching is approximate** — match quality depends on how closely the marketplace listing name overlaps with the internal product name. Check `myntra_match_score` and `ajio_match_score` in `data/results.json` to see confidence per SKU (0–1 scale).
 - **Ajio bot detection** — Ajio's search page blocks headless browsers. The scraper runs with `headless=False` (visible window). If it returns 0 products, try running it again or introducing a longer scroll wait in `scrapers/ajio_search.py`.
 - **Myntra HTTP/2 errors** — Myntra may reject connections; the scraper uses `--disable-http2` to mitigate this. If it fails, try rerunning.
+- **Amazon coverage is partial by design** — TenXYou's Amazon presence is a smaller, footwear-leaning brand store catalog, not its full product range like on Myntra/Ajio. Only a subset of SKUs will find an Amazon match (currently ~44/75), so missing Amazon prices on some rows is expected, not a bug.
 - **Prices update only when scrapers are re-run** — the dashboard does not scrape live on every button click. Run the scrapers first, then click Scrape Now.
 - **Color variant deduplication** — multiple color variants of the same product are collapsed to a single representative price (mode across variants, falling back to median). The displayed price is one variant, not a range.

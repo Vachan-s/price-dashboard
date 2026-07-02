@@ -58,6 +58,10 @@ def _slug_base(url: str) -> str:
     m = re.search(r"/p/(\d+)", url)
     if m:
         return m.group(1)
+    # Amazon: .../dp/B0G53JQL2L/ref=sr_1_5 → "B0G53JQL2L"
+    m = re.search(r"/dp/([A-Z0-9]{10})", url)
+    if m:
+        return m.group(1)
     # Myntra: .../product-slug/39062448/buy → "product-slug"
     parts = [p for p in url.split("/") if p]
     for i, part in enumerate(parts):
@@ -70,9 +74,14 @@ def _parse_price(price_str) -> float | None:
     """Extract numeric value from a price string. Returns None if 0 or unparseable."""
     if isinstance(price_str, (int, float)):
         return float(price_str) if price_str else None
-    s = re.sub(r"[^\d,]", "", str(price_str or "")).replace(",", "")
+    # Match a proper number (with optional thousands commas and decimal fraction)
+    # rather than stripping stray punctuation, since labels like "Rs." would
+    # otherwise leave a leading decimal point behind (e.g. "Rs. 1199" → ".1199").
+    m = re.search(r"\d[\d,]*\.\d+|\d[\d,]*", str(price_str or ""))
+    if not m:
+        return None
     try:
-        v = float(s) if s else None
+        v = float(m.group(0).replace(",", ""))
         return v if v else None
     except ValueError:
         return None
@@ -125,10 +134,52 @@ def find_best_match(product_name: str, candidates: list) -> tuple:
     return (best, round(best_score, 4)) if best_score > 0.0 else (None, 0.0)
 
 
+def find_tenxyou_anchor(product_name: str, tenxyou_products: list) -> dict | None:
+    """Find the closest TenXYou product by plain name word-overlap (no threshold —
+    every candidate is already a TenXYou product, so even a weak match is useful
+    as an anchor query for Myntra/Ajio matching)."""
+    target = normalize(product_name)
+    if not target or not tenxyou_products:
+        return None
+    best_score, best = -1.0, None
+    for p in tenxyou_products:
+        cand = normalize(p.get("name", ""))
+        union = target | cand
+        score = len(target & cand) / len(union) if union else 0.0
+        if score > best_score:
+            best_score, best = score, p
+    return best
+
+
+_CATEGORY_KEYWORDS = {
+    "XU": ("shoe", "sneaker", "slides", "flip", "slipper", "clog", "sandal"),
+    "XA": ("cap", "sock", "insole", "spike"),
+}
+
+
+def filter_by_category(sku: str, products: list) -> list:
+    """Restrict candidates to those matching the SKU prefix's category. Unrecognized
+    prefixes are left unfiltered."""
+    prefix = (sku or "").strip().upper()[:2]
+
+    def name_of(p):
+        return (p.get("name") or "").lower()
+
+    if prefix == "XM":
+        return [p for p in products if "men" in name_of(p) and "women" not in name_of(p)]
+    if prefix == "XW":
+        return [p for p in products if "women" in name_of(p) or "woman" in name_of(p)]
+    if prefix in _CATEGORY_KEYWORDS:
+        keywords = _CATEGORY_KEYWORDS[prefix]
+        return [p for p in products if any(k in name_of(p) for k in keywords)]
+    return products
+
+
 # ── Core async scrape ──────────────────────────────────────────────────────────
 
 MYNTRA_CACHE_PATH   = "data/myntra_search_results.json"
 AJIO_CACHE_PATH     = "data/ajio_search_results.json"
+AMAZON_CACHE_PATH   = "data/amazon_search_results.json"
 TENXYOU_CACHE_PATH  = "data/tenxyou_search_results.json"
 
 
@@ -149,21 +200,33 @@ async def _run_scrape(rows: list) -> list:
     print("_RUN_SCRAPE CALLED", flush=True)
     raw_myntra  = _load_cache(MYNTRA_CACHE_PATH)
     raw_ajio    = _load_cache(AJIO_CACHE_PATH)
+    raw_amazon  = _load_cache(AMAZON_CACHE_PATH)
     raw_tenxyou = _load_cache(TENXYOU_CACHE_PATH)
 
     myntra_products  = dedup_products(raw_myntra)
     ajio_products    = dedup_products(raw_ajio)
+    amazon_products  = dedup_products(raw_amazon)
     tenxyou_products = dedup_products(raw_tenxyou)
 
     print(f"[SCRAPE] Myntra:  {len(raw_myntra)} raw → {len(myntra_products)} deduped", flush=True)
     print(f"[SCRAPE] Ajio:    {len(raw_ajio)} raw → {len(ajio_products)} deduped", flush=True)
+    print(f"[SCRAPE] Amazon:  {len(raw_amazon)} raw → {len(amazon_products)} deduped", flush=True)
     print(f"[SCRAPE] TenXYou: {len(raw_tenxyou)} raw → {len(tenxyou_products)} deduped", flush=True)
 
     results = []
     for sku, name in rows:
-        myntra_match,  m_score = find_best_match(name, myntra_products)
-        ajio_match,    a_score = find_best_match(name, ajio_products)
         tenxyou_match, t_score = find_best_match(name, tenxyou_products)
+
+        anchor = find_tenxyou_anchor(name, tenxyou_products)
+        query_name = anchor["name"] if anchor else name
+
+        myntra_candidates = filter_by_category(sku, myntra_products)
+        ajio_candidates   = filter_by_category(sku, ajio_products)
+        amazon_candidates = filter_by_category(sku, amazon_products)
+
+        myntra_match, m_score  = find_best_match(query_name, myntra_candidates)
+        ajio_match,   a_score  = find_best_match(query_name, ajio_candidates)
+        amazon_match, az_score = find_best_match(query_name, amazon_candidates)
 
         tenxyou_price       = _normalize_price(tenxyou_match["price"]) if tenxyou_match else None
         matched_tenxyou_url = tenxyou_match["url"]   if tenxyou_match else None
@@ -171,24 +234,28 @@ async def _run_scrape(rows: list) -> list:
         matched_myntra_url  = myntra_match["url"]    if myntra_match  else None
         ajio_price          = _normalize_price(ajio_match["price"])    if ajio_match    else None
         matched_ajio_url    = ajio_match["url"]      if ajio_match    else None
+        amazon_price        = _normalize_price(amazon_match["price"])  if amazon_match  else None
+        matched_amazon_url  = amazon_match["url"]    if amazon_match  else None
 
-        comp_prices = [p for p in [myntra_price, ajio_price] if p is not None]
+        comp_prices = [p for p in [myntra_price, ajio_price, amazon_price] if p is not None]
         lowest_comp_price = min(comp_prices) if comp_prices else None
 
         print(
             f"  {sku:<14} T={t_score:.2f} {(tenxyou_match['name'] if tenxyou_match else 'NO MATCH')[:30]}"
             f"  M={m_score:.2f} {(myntra_match['name'] if myntra_match else 'NO MATCH')[:25]}"
-            f"  A={a_score:.2f} {(ajio_match['name'] if ajio_match else 'NO MATCH')[:25]}",
+            f"  A={a_score:.2f} {(ajio_match['name'] if ajio_match else 'NO MATCH')[:25]}"
+            f"  AZ={az_score:.2f} {(amazon_match['name'] if amazon_match else 'NO MATCH')[:25]}",
             flush=True,
         )
 
-        t_ok = tenxyou_price is not None
-        m_ok = myntra_price  is not None
-        a_ok = ajio_price    is not None
+        t_ok  = tenxyou_price is not None
+        m_ok  = myntra_price  is not None
+        a_ok  = ajio_price    is not None
+        az_ok = amazon_price  is not None
 
-        if t_ok and (m_ok or a_ok):
+        if t_ok and (m_ok or a_ok or az_ok):
             status = "success"
-        elif t_ok or m_ok or a_ok:
+        elif t_ok or m_ok or a_ok or az_ok:
             status = "partial"
         else:
             status = "error"
@@ -199,13 +266,16 @@ async def _run_scrape(rows: list) -> list:
             "tenxyou_price":       tenxyou_price,
             "myntra_price":        myntra_price,
             "ajio_price":          ajio_price,
+            "amazon_price":        amazon_price,
             "lowest_comp_price":   lowest_comp_price,
             "matched_tenxyou_url": matched_tenxyou_url,
             "matched_myntra_url":  matched_myntra_url,
             "matched_ajio_url":    matched_ajio_url,
+            "matched_amazon_url":  matched_amazon_url,
             "tenxyou_match_score": t_score,
             "myntra_match_score":  m_score,
             "ajio_match_score":    a_score,
+            "amazon_match_score":  az_score,
             "status":              status,
         })
 
@@ -275,10 +345,11 @@ def export():
     si = StringIO()
     writer = csv.DictWriter(
         si,
-        fieldnames=["sku", "name", "tenxyou_price", "myntra_price", "ajio_price",
+        fieldnames=["sku", "name", "tenxyou_price", "myntra_price", "ajio_price", "amazon_price",
                     "lowest_comp_price",
-                    "matched_tenxyou_url", "matched_myntra_url", "matched_ajio_url",
-                    "tenxyou_match_score", "myntra_match_score", "ajio_match_score", "status"],
+                    "matched_tenxyou_url", "matched_myntra_url", "matched_ajio_url", "matched_amazon_url",
+                    "tenxyou_match_score", "myntra_match_score", "ajio_match_score", "amazon_match_score",
+                    "status"],
         extrasaction="ignore",
     )
     writer.writeheader()
