@@ -5,7 +5,7 @@ from playwright_stealth import Stealth
 async def scrape_ajio_price(url: str) -> dict:
     async with async_playwright() as p:
         browser = await p.chromium.launch(
-            headless=False,
+            headless=True,
             channel="chrome",
             args=["--disable-blink-features=AutomationControlled"]
         )
@@ -22,8 +22,8 @@ async def scrape_ajio_price(url: str) -> dict:
         })
 
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=3000)
-            await page.wait_for_timeout(5000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(1500)
 
             price_el = await page.query_selector("div.prod-sp")
             price = await price_el.inner_text() if price_el else "Not found"

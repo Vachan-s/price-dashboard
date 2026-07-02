@@ -3,6 +3,11 @@ __pycache__/
 *.pyc
 .env
 
+# generated data — never commit live results or cache files
+data/results.json
+data/*.json
+data/~$*.xlsx
+
 # local cache / tooling
 .pytest_cache/
 .mypy_cache/

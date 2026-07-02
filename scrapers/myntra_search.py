@@ -2,7 +2,7 @@ import asyncio
 import json
 from playwright.async_api import async_playwright
 
-SEARCH_URL = "https://www.myntra.com/ten+x+you"
+SEARCH_URL = "https://www.myntra.com/ten-x-you"
 RESULTS_PATH = "data/myntra_search_results.json"
 ITEM_SELECTOR = "li.product-base"
 
@@ -21,10 +21,18 @@ async def scrape_myntra_search(search_url: str = SEARCH_URL) -> list:
     products = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+        browser = await p.chromium.launch(
+            headless=False,
+            args=["--disable-http2"],
+        )
         page = await browser.new_page()
 
+        await page.set_extra_http_headers({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+
         try:
+            await page.wait_for_timeout(2000)
             await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
             await page.wait_for_selector(ITEM_SELECTOR, timeout=15000)
 

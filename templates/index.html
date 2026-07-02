@@ -73,6 +73,19 @@
     }
     #btn-scrape:hover:not(:disabled) { opacity: 0.88; }
 
+    .ajio-refresh-note {
+      font-size: 0.78rem;
+      color: #888;
+      margin-top: 6px;
+    }
+    .ajio-refresh-note code {
+      background: #f0f2f5;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: monospace;
+      color: #555;
+    }
+
     #btn-export {
       background: #fff;
       color: #4f46e5;
@@ -97,6 +110,11 @@
       overflow: hidden;
     }
 
+    .table-wrapper {
+      overflow-y: auto;
+      max-height: 72vh;
+    }
+
     #empty-state {
       padding: 60px 24px;
       text-align: center;
@@ -109,7 +127,12 @@
       border-collapse: collapse;
       font-size: 0.9rem;
     }
-    thead { background: #f8fafc; }
+    thead {
+      background: #f8fafc;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
     thead th {
       padding: 14px 18px;
       text-align: left;
@@ -119,6 +142,7 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
       border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
     }
     tbody tr { border-bottom: 1px solid #f1f5f9; transition: background 0.1s; }
     tbody tr:last-child { border-bottom: none; }
@@ -135,17 +159,15 @@
       font-family: monospace;
     }
 
-    .price { font-weight: 600; color: #1a1a2e; font-size: 1rem; }
+    .price { font-weight: 600; color: #1a1a2e; }
 
-    .tenxyou-price {
+    .lowest-badge {
       display: inline-block;
-      font-weight: 700;
-      color: #2563eb;
-      background: #eff6ff;
-      border: 1px solid #bfdbfe;
-      padding: 4px 10px;
+      background: #dcfce7;
+      color: #15803d;
+      padding: 3px 9px;
       border-radius: 6px;
-      font-size: 0.95rem;
+      font-weight: 700;
     }
 
     .gap-badge {
@@ -204,10 +226,15 @@
       <div class="stat-pill">Last scrape: <strong id="stat-time">—</strong></div>
     </div>
     <div class="actions">
-      <button id="btn-scrape">
-        <div class="spinner" id="spinner"></div>
-        <span id="btn-scrape-label">Scrape Now</span>
-      </button>
+      <div>
+        <button id="btn-scrape">
+          <div class="spinner" id="spinner"></div>
+          <span id="btn-scrape-label">Scrape Now</span>
+        </button>
+        <p class="ajio-refresh-note">To update TenXYou prices, run <code>python scrapers/tenxyou_search.py</code> in terminal first.</p>
+        <p class="ajio-refresh-note">To update Myntra prices, run <code>python scrapers/myntra_search.py</code> in terminal first.</p>
+        <p class="ajio-refresh-note">To update Ajio prices, run <code>python scrapers/ajio_search.py</code> in terminal first.</p>
+      </div>
       <button id="btn-export">Export CSV</button>
     </div>
   </div>
@@ -217,6 +244,7 @@
       <strong>No results yet</strong>
       <p>Click "Scrape Now" to fetch the latest prices.</p>
     </div>
+    <div class="table-wrapper">
     <table id="results-table" style="display:none;">
       <thead>
         <tr>
@@ -224,12 +252,14 @@
           <th>Product Name</th>
           <th>TenXYou Price</th>
           <th>Myntra Price</th>
+          <th>Ajio Price</th>
           <th>Gap</th>
           <th>Status</th>
         </tr>
       </thead>
       <tbody id="results-body"></tbody>
     </table>
+    </div>
   </div>
 </main>
 
@@ -259,17 +289,24 @@
     return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   }
 
-  function parsePrice(str) {
-    if (!str) return null;
-    const num = parseFloat(str.replace(/[^0-9.]/g, ''));
-    return isNaN(num) ? null : num;
+  function formatPrice(num) {
+    if (num === null || num === undefined) return null;
+    try { return '₹' + Number(num).toLocaleString('en-IN'); }
+    catch(e) { return '₹' + Number(num).toLocaleString(); }
   }
 
-  function gapHtml(tenxyouStr, myntraStr) {
-    const t = parsePrice(tenxyouStr);
-    const m = parsePrice(myntraStr);
-    if (!t || !m) return '<span class="gap-badge gap-neutral">—</span>';
-    const pct = ((m - t) / t * 100).toFixed(1);
+  function priceCell(num, minPrice) {
+    if (num === null || num === undefined) return '<span style="color:#aaa">—</span>';
+    const fmt = formatPrice(num);
+    return (minPrice !== null && num === minPrice)
+      ? `<span class="lowest-badge">${fmt}</span>`
+      : fmt;
+  }
+
+  function gapHtml(tenxyouPrice, lowestComp) {
+    if (tenxyouPrice == null || lowestComp == null)
+      return '<span class="gap-badge gap-neutral">—</span>';
+    const pct = ((lowestComp - tenxyouPrice) / tenxyouPrice * 100).toFixed(1);
     const cls = pct > 0 ? 'gap-positive' : pct < 0 ? 'gap-negative' : 'gap-neutral';
     const sign = pct > 0 ? '+' : '';
     return `<span class="gap-badge ${cls}">${sign}${pct}%</span>`;
@@ -292,19 +329,28 @@
                       : 'status-error';
       const statusIcon = r.status === 'success' ? '✓' : r.status === 'partial' ? '~' : '✗';
       const statusHtml = `<span class="status-badge ${statusCls}">${statusIcon} ${r.status}</span>`;
-      const name   = r.name || '—';
-      const sku    = r.sku  || '—';
-      const mPrice = r.myntra_price   || '—';
-      const tPrice = r.tenxyou_price;
-      const tPriceHtml = tPrice
-        ? `<span class="tenxyou-price">${tPrice}</span>`
-        : '<span style="color:#aaa">—</span>';
+
+      const name = r.name || '—';
+      const sku  = r.sku  || '—';
+
+      const tPrice  = r.tenxyou_price    ?? null;
+      const mPrice  = r.myntra_price     ?? null;
+      const aPrice  = r.ajio_price       ?? null;
+      const lowComp = r.lowest_comp_price ?? null;
+
+      // Find lowest non-null price across all three for green highlight
+      const allPrices = [tPrice, mPrice, aPrice].filter(p => p !== null);
+      const minPrice  = allPrices.length ? Math.min(...allPrices) : null;
+
+      const lowCompFmt = lowComp !== null ? formatPrice(lowComp) : '—';
+
       return `<tr>
         <td><span class="sku-badge">${sku}</span></td>
         <td>${name}</td>
-        <td>${tPriceHtml}</td>
-        <td><span class="price">${mPrice}</span></td>
-        <td>${gapHtml(tPrice, r.myntra_price)}</td>
+        <td>${priceCell(tPrice, minPrice)}</td>
+        <td>${priceCell(mPrice, minPrice)}</td>
+        <td>${priceCell(aPrice, minPrice)}</td>
+        <td>${gapHtml(tPrice, lowComp)}</td>
         <td>${statusHtml}</td>
       </tr>`;
     }).join('');
