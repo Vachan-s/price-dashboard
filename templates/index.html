@@ -369,7 +369,7 @@
       return `<tr>
         <td><span class="sku-badge">${sku}</span></td>
         <td>${name}</td>
-        <td>${priceCell(tPrice, minPrice, r.tenxyou_has_url, false)}</td>
+        <td>${priceCell(tPrice, minPrice, r.tenxyou_has_url, r.tenxyou_fuzzy_match)}</td>
         <td>${priceCell(mPrice, minPrice, r.myntra_has_url, r.myntra_fuzzy_match)}</td>
         <td>${priceCell(aPrice, minPrice, r.ajio_has_url, r.ajio_fuzzy_match)}</td>
         <td>${priceCell(azPrice, minPrice, r.amazon_has_url, r.amazon_fuzzy_match)}</td>

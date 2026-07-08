@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from io import StringIO
 
@@ -15,6 +16,7 @@ from playwright.async_api import async_playwright
 from scrapers.amazon_search import scrape_amazon_price_with_page
 from scrapers.myntra import scrape_myntra_price_with_page
 from scrapers.tenxyou import scrape_tenxyou_price_with_page
+from scrapers.tenxyou_search import _product_key as _tenxyou_base_slug
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,6 +38,7 @@ AMAZON_USER_AGENT = (
 )
 
 FUZZY_MATCH_THRESHOLD = 0.6
+SCRAPE_CONCURRENCY    = 5
 
 # ── Price helpers ────────────────────────────────────────────────────────────
 
@@ -68,8 +71,40 @@ def _norm_url(url: str) -> str:
     return (url or "").split("?")[0].rstrip("/")
 
 
-# ── Supplementary fuzzy-matching helpers (used only for products that aren't
-# in url_mapping.xlsx yet — see _apply_supplementary_fuzzy_matching) ─────────
+_AMAZON_ASIN_RE = re.compile(r"/dp/([A-Z0-9]{10})")
+_MYNTRA_ID_RE   = re.compile(r"/(\d{6,8})/")
+_AJIO_CODE_RE   = re.compile(r"/p/(\d+)_")
+
+
+def _extract_stable_id(url: str, platform: str) -> str:
+    """Extract a stable per-platform product identifier from a URL, so matching
+    a mapping-sheet URL against a scraped/cached listing is robust to query
+    params, /ref= suffixes, color-variant suffixes, and slug wording
+    differences. Falls back to the plain normalized URL if the expected
+    pattern isn't found (e.g. a malformed or unrecognized URL)."""
+    url = url or ""
+    if platform == "amazon":
+        m = _AMAZON_ASIN_RE.search(url)
+        if m:
+            return m.group(1)
+    elif platform == "myntra":
+        m = _MYNTRA_ID_RE.search(url)
+        if m:
+            return m.group(1)
+    elif platform == "ajio":
+        m = _AJIO_CODE_RE.search(url)
+        if m:
+            return m.group(1)
+    elif platform == "tenxyou":
+        return _tenxyou_base_slug(url)
+    return _norm_url(url)
+
+
+# ── Fuzzy-matching helpers (supplementary pass for SKUs still missing a Myntra
+# or TenXYou price after primary per-URL scraping — see _run_scrape) ─────────
+
+
+_FUZZY_STOP_WORDS = {"ten", "x", "you", "unisex", "women", "men", "fit", "regular"}
 
 
 def _stem(word: str) -> str:
@@ -77,10 +112,11 @@ def _stem(word: str) -> str:
 
 
 def normalize(text: str) -> set:
-    """Normalize a product name into a stemmed word set."""
+    """Normalize a product name into a stemmed word set, stripping brand/generic
+    noise words so the distinctive product terms carry the Jaccard score."""
     text = (text or "").lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
-    return {_stem(w) for w in text.split()}
+    return {_stem(w) for w in text.split()} - _FUZZY_STOP_WORDS
 
 
 def _fuzzy_score(a: str, b: str) -> float:
@@ -180,8 +216,8 @@ def _load_sku_mapping_fallback() -> dict:
 # ── Core async scrape ──────────────────────────────────────────────────────────
 
 MYNTRA_CACHE_PATH  = "data/myntra_search_results.json"
+TENXYOU_CACHE_PATH = "data/tenxyou_search_results.json"
 AJIO_CACHE_PATH    = "data/ajio_search_results.json"
-AMAZON_CACHE_PATH  = "data/amazon_search_results.json"
 
 
 def _load_cache(path: str) -> list:
@@ -197,81 +233,128 @@ def _load_cache(path: str) -> list:
         return []
 
 
-async def _scrape_lowest(opener, urls: list, scrape_fn, sku: str = "", debug_label: str = "") -> tuple:
-    """Scrape every URL in `urls` (via a fresh page from `opener`, a Browser or
-    BrowserContext) with scrape_fn(page, url), and return (lowest_price, its_url).
-    Returns (None, None) if urls is empty or none scraped a price successfully.
-    If debug_label is set, logs SKU/URL/error for every URL that fails to yield
-    a price (used for Myntra debugging — see _run_scrape)."""
-    if not urls:
-        return None, None
-    best_price, best_url = None, None
-    for url in urls:
-        page = await opener.new_page()
-        error_msg = None
+def _build_mapped_url_set(url_mapping: dict, platform: str) -> set:
+    """All URLs listed anywhere in url_mapping.xlsx for one platform, reduced to
+    their stable IDs — keeps the fuzzy-match fallback from re-claiming a product
+    that's already spoken for by an exact URL mapping (for this SKU or any
+    other), robust to query params/color variants/slug wording differences."""
+    return {_extract_stable_id(u, platform) for e in url_mapping.values() for u in e[platform]}
+
+
+async def _scrape_one(sem: asyncio.Semaphore, browser, scrape_fn, sku: str, url: str) -> tuple:
+    """Scrape a single (sku, url) pair under the shared concurrency semaphore.
+    Returns (sku, url, price) — price is None on any failure."""
+    async with sem:
+        page = await browser.new_page()
         try:
             result = await scrape_fn(page, url)
-            if result.get("status") == "success":
-                price = _normalize_price(result.get("price"))
-                if price is None:
-                    error_msg = f"no parsable price (raw price: {result.get('price')!r})"
-            else:
-                price = None
-                error_msg = result.get("status")
+            price = _normalize_price(result.get("price")) if result.get("status") == "success" else None
         except Exception as e:
             print(f"[SCRAPE ERROR] {url}: {e}", flush=True)
             price = None
-            error_msg = str(e)
         finally:
             await page.close()
-
-        if price is None and debug_label:
-            print(f"[{debug_label} DEBUG] SKU={sku}  URL={url}\n    -> {error_msg}", flush=True)
-
-        if price is not None and (best_price is None or price < best_price):
-            best_price, best_url = price, url
-    return best_price, best_url
+        return sku, url, price
 
 
-def _lookup_ajio_lowest(urls: list, ajio_by_url: dict) -> tuple:
-    """Ajio product pages are blocked by Akamai, so look prices up from the
-    cached search-results JSON instead of scraping the page directly."""
+async def _scrape_all_lowest(sem: asyncio.Semaphore, browser, scrape_fn, sku_url_pairs: list) -> dict:
+    """Scrape every (sku, url) pair concurrently (bounded by sem) and reduce to
+    {sku: (lowest_price, matched_url)} — SKUs with no successful price are omitted.
+    Used for Myntra/TenXYou individual-page scraping (asyncio.gather + semaphore)."""
+    if not sku_url_pairs:
+        return {}
+    outcomes = await asyncio.gather(
+        *(_scrape_one(sem, browser, scrape_fn, sku, url) for sku, url in sku_url_pairs)
+    )
+    best: dict = {}
+    for sku, url, price in outcomes:
+        if price is None:
+            continue
+        cur = best.get(sku)
+        if cur is None or price < cur[0]:
+            best[sku] = (price, url)
+    return best
+
+
+async def _scrape_amazon_lowest(context, urls: list) -> tuple:
+    """Scrape every Amazon URL for one SKU sequentially and return
+    (lowest_price, its_url). Returns (None, None) if urls is empty or none
+    scraped a price successfully."""
     if not urls:
         return None, None
     best_price, best_url = None, None
     for url in urls:
-        product = ajio_by_url.get(_norm_url(url))
-        if not product:
-            continue
-        price = _normalize_price(product.get("price"))
+        page = await context.new_page()
+        try:
+            result = await scrape_amazon_price_with_page(page, url)
+            price = _normalize_price(result.get("price")) if result.get("status") == "success" else None
+        except Exception as e:
+            print(f"[SCRAPE ERROR] {url}: {e}", flush=True)
+            price = None
+        finally:
+            await page.close()
         if price is not None and (best_price is None or price < best_price):
             best_price, best_url = price, url
     return best_price, best_url
 
 
-def _apply_supplementary_fuzzy_matching(results: list, raw_myntra: list, raw_ajio: list,
-                                         raw_amazon: list, mapped_urls: dict) -> None:
-    """For each platform, look at scraped search-results-cache products whose URL
-    doesn't already appear in url_mapping.xlsx, and try to fuzzy-match them
-    (word-overlap, >= FUZZY_MATCH_THRESHOLD confidence) against SKUs that still
-    have no price for that platform. Mutates `results` in place. This is how new
-    marketplace listings that aren't in the URL mapping sheet yet still show up."""
+def _lookup_ajio_lowest(urls: list, ajio_by_id: dict) -> tuple:
+    """Ajio product pages are blocked by Akamai, so look prices up from the
+    cached search-results JSON instead of scraping the page directly. Matches
+    on the stable Ajio product code (ignoring color suffix and trailing '?') —
+    ajio_by_id maps that code to *all* cached listings sharing it, since
+    different color variants of the same product share a product code, and
+    we still want the lowest price among them."""
+    if not urls:
+        return None, None
+    best_price, best_url = None, None
+    for url in urls:
+        products = ajio_by_id.get(_extract_stable_id(url, "ajio"), [])
+        for product in products:
+            price = _normalize_price(product.get("price"))
+            if price is not None and (best_price is None or price < best_price):
+                best_price, best_url = price, url
+    return best_price, best_url
+
+
+def _lookup_tenxyou_exact(name: str, raw_tenxyou: list) -> tuple:
+    """Cache fallback for TenXYou, mirroring how Ajio prices are looked up from
+    cache: case-insensitive, whitespace-stripped exact name match against
+    data/tenxyou_search_results.json. Returns (price, url), (None, None) if
+    nothing matches."""
+    target = (name or "").strip().lower()
+    if not target:
+        return None, None
+    for p in raw_tenxyou:
+        if (p.get("name") or "").strip().lower() == target:
+            price = _normalize_price(p.get("price"))
+            if price is not None:
+                return price, p.get("url")
+    return None, None
+
+
+def _apply_supplementary_fuzzy_matching(results: list, raw_myntra: list, raw_tenxyou: list,
+                                         excluded_urls: dict) -> None:
+    """After primary per-URL scraping, fuzzy-match SKUs still missing a Myntra or
+    TenXYou price against the cached search-results JSON (not a live scrape),
+    skipping products already claimed by url_mapping.xlsx for any SKU. Mutates
+    `results` in place, flagging a hit with "<platform>_fuzzy_match": True."""
     platform_specs = [
-        ("myntra", raw_myntra, "myntra_price", "matched_myntra_url", "myntra_fuzzy_match"),
-        ("ajio",   raw_ajio,   "ajio_price",   "matched_ajio_url",   "ajio_fuzzy_match"),
-        ("amazon", raw_amazon, "amazon_price", "matched_amazon_url", "amazon_fuzzy_match"),
+        ("myntra",  raw_myntra,  "myntra_price",  "matched_myntra_url",  "myntra_fuzzy_match"),
+        ("tenxyou", raw_tenxyou, "tenxyou_price", "matched_tenxyou_url", "tenxyou_fuzzy_match"),
     ]
 
     for platform, raw_products, price_key, url_key, flag_key in platform_specs:
-        mapped = mapped_urls.get(platform, set())
-        unmatched = [p for p in raw_products if _norm_url(p.get("url", "")) not in mapped]
-        if not unmatched:
+        excluded = excluded_urls.get(platform, set())
+        candidates_pool = [p for p in raw_products if _extract_stable_id(p.get("url", ""), platform) not in excluded]
+        if not candidates_pool:
             continue
 
-        candidates = [r for r in results if r.get(price_key) is None]
-        for r in candidates:
+        for r in results:
+            if r.get(price_key) is not None:
+                continue
             best_score, best_product = 0.0, None
-            for p in unmatched:
+            for p in candidates_pool:
                 score = _fuzzy_score(r["name"], p.get("name", ""))
                 if score > best_score:
                     best_score, best_product = score, p
@@ -315,11 +398,10 @@ async def _run_scrape(rows: list) -> list:
     sku_fallback = _load_sku_mapping_fallback()
     sheet_names  = {sku: name for sku, name in rows}
 
-    raw_myntra = _load_cache(MYNTRA_CACHE_PATH)
-    raw_ajio   = _load_cache(AJIO_CACHE_PATH)
-    raw_amazon = _load_cache(AMAZON_CACHE_PATH)
-
-    ajio_by_url = {_norm_url(p.get("url", "")): p for p in raw_ajio}
+    raw_ajio = _load_cache(AJIO_CACHE_PATH)
+    ajio_by_id: dict = defaultdict(list)
+    for p in raw_ajio:
+        ajio_by_id[_extract_stable_id(p.get("url", ""), "ajio")].append(p)
 
     print(f"[SCRAPE] URL mapping: {len(url_mapping)} SKUs loaded from {URL_MAPPING_PATH}", flush=True)
     print(f"[SCRAPE] Ajio cache:  {len(raw_ajio)} products loaded from {AJIO_CACHE_PATH}", flush=True)
@@ -330,7 +412,18 @@ async def _run_scrape(rows: list) -> list:
         if sku not in url_mapping:
             ordered_skus.append(sku)
 
-    results = []
+    entries = {
+        sku: url_mapping.get(sku) or sku_fallback.get(sku) or {
+            "display_name": "", "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
+        }
+        for sku in ordered_skus
+    }
+
+    # ── Primary: individual-page scraping. Myntra + TenXYou run concurrently
+    # (bounded to SCRAPE_CONCURRENCY at a time); Amazon runs sequentially below.
+    myntra_pairs  = [(sku, u) for sku in ordered_skus for u in entries[sku]["myntra"]]
+    tenxyou_pairs = [(sku, u) for sku in ordered_skus for u in entries[sku]["tenxyou"]]
+    sem = asyncio.Semaphore(SCRAPE_CONCURRENCY)
 
     async with async_playwright() as p:
         tenxyou_browser = await p.chromium.launch(headless=True)
@@ -345,28 +438,20 @@ async def _run_scrape(rows: list) -> list:
         )
 
         try:
+            myntra_best, tenxyou_best = await asyncio.gather(
+                _scrape_all_lowest(sem, myntra_browser, scrape_myntra_price_with_page, myntra_pairs),
+                _scrape_all_lowest(sem, tenxyou_browser, scrape_tenxyou_price_with_page, tenxyou_pairs),
+            )
+
+            results = []
             for sku in ordered_skus:
-                entry = url_mapping.get(sku) or sku_fallback.get(sku) or {
-                    "display_name": "", "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
-                }
+                entry = entries[sku]
                 name = entry["display_name"] or sheet_names.get(sku, sku)
 
-                tenxyou_urls = entry["tenxyou"]
-                myntra_urls  = entry["myntra"]
-                ajio_urls    = entry["ajio"]
-                amazon_urls  = entry["amazon"]
-
-                tenxyou_price, matched_tenxyou_url = await _scrape_lowest(
-                    tenxyou_browser, tenxyou_urls, scrape_tenxyou_price_with_page
-                )
-                myntra_price, matched_myntra_url = await _scrape_lowest(
-                    myntra_browser, myntra_urls, scrape_myntra_price_with_page,
-                    sku=sku, debug_label="MYNTRA",
-                )
-                amazon_price, matched_amazon_url = await _scrape_lowest(
-                    amazon_context, amazon_urls, scrape_amazon_price_with_page
-                )
-                ajio_price, matched_ajio_url = _lookup_ajio_lowest(ajio_urls, ajio_by_url)
+                tenxyou_price, matched_tenxyou_url = tenxyou_best.get(sku, (None, None))
+                myntra_price,  matched_myntra_url  = myntra_best.get(sku, (None, None))
+                ajio_price,    matched_ajio_url    = _lookup_ajio_lowest(entry["ajio"], ajio_by_id)
+                amazon_price,  matched_amazon_url  = await _scrape_amazon_lowest(amazon_context, entry["amazon"])
 
                 print(
                     f"  {sku:<12} T={tenxyou_price} M={myntra_price} A={ajio_price} AZ={amazon_price}",
@@ -384,10 +469,11 @@ async def _run_scrape(rows: list) -> list:
                     "matched_myntra_url":  matched_myntra_url,
                     "matched_ajio_url":    matched_ajio_url,
                     "matched_amazon_url":  matched_amazon_url,
-                    "tenxyou_has_url":     bool(tenxyou_urls),
-                    "myntra_has_url":      bool(myntra_urls),
-                    "ajio_has_url":        bool(ajio_urls),
-                    "amazon_has_url":      bool(amazon_urls),
+                    "tenxyou_has_url":     bool(entry["tenxyou"]),
+                    "myntra_has_url":      bool(entry["myntra"]),
+                    "ajio_has_url":        bool(entry["ajio"]),
+                    "amazon_has_url":      bool(entry["amazon"]),
+                    "tenxyou_fuzzy_match": False,
                     "myntra_fuzzy_match":  False,
                     "ajio_fuzzy_match":    False,
                     "amazon_fuzzy_match":  False,
@@ -397,12 +483,27 @@ async def _run_scrape(rows: list) -> list:
             await myntra_browser.close()
             await amazon_browser.close()
 
-    mapped_urls = {
-        "myntra": {_norm_url(u) for e in url_mapping.values() for u in e["myntra"]},
-        "ajio":   {_norm_url(u) for e in url_mapping.values() for u in e["ajio"]},
-        "amazon": {_norm_url(u) for e in url_mapping.values() for u in e["amazon"]},
+    # ── Supplementary: fuzzy-match still-missing Myntra/TenXYou prices against
+    # cached (not live) search results.
+    print("[SCRAPE] Loading cached search results for supplementary fuzzy matching...", flush=True)
+    raw_myntra_cache  = _load_cache(MYNTRA_CACHE_PATH)
+    raw_tenxyou_cache = _load_cache(TENXYOU_CACHE_PATH)
+
+    # TenXYou cache fallback: exact name match first (cheap, high-confidence,
+    # same idea as the Ajio cache lookup) before the broader fuzzy word-overlap pass.
+    for r in results:
+        if r["tenxyou_price"] is None:
+            price, url = _lookup_tenxyou_exact(r["name"], raw_tenxyou_cache)
+            if price is not None:
+                r["tenxyou_price"] = price
+                r["matched_tenxyou_url"] = url
+                r["tenxyou_fuzzy_match"] = True
+
+    excluded_urls = {
+        "myntra":  _build_mapped_url_set(url_mapping, "myntra"),
+        "tenxyou": _build_mapped_url_set(url_mapping, "tenxyou"),
     }
-    _apply_supplementary_fuzzy_matching(results, raw_myntra, raw_ajio, raw_amazon, mapped_urls)
+    _apply_supplementary_fuzzy_matching(results, raw_myntra_cache, raw_tenxyou_cache, excluded_urls)
 
     for r in results:
         comp_prices = [p for p in [r["myntra_price"], r["ajio_price"], r["amazon_price"]] if p is not None]
@@ -479,7 +580,7 @@ def export():
                     "lowest_comp_price",
                     "matched_tenxyou_url", "matched_myntra_url", "matched_ajio_url", "matched_amazon_url",
                     "tenxyou_has_url", "myntra_has_url", "ajio_has_url", "amazon_has_url",
-                    "myntra_fuzzy_match", "ajio_fuzzy_match", "amazon_fuzzy_match",
+                    "tenxyou_fuzzy_match", "myntra_fuzzy_match", "ajio_fuzzy_match", "amazon_fuzzy_match",
                     "status"],
         extrasaction="ignore",
     )

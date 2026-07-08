@@ -1,0 +1,14 @@
+XU011 {'tenxyou': 1, 'myntra': 2, 'ajio': 1, 'amazon': 1}
+XU002 {'tenxyou': 1, 'myntra': 1, 'ajio': 2, 'amazon': 1}
+XW5005 {'tenxyou': 1, 'myntra': 0, 'ajio': 1, 'amazon': 0}
+_RUN_SCRAPE CALLED
+[SCRAPE] URL mapping: 3 SKUs loaded from data/url_mapping.xlsx
+[SCRAPE] Ajio cache:  45 products loaded from data/ajio_search_results.json
+  XU011        T=3099 M=3119 A=3279 AZ=3099
+  XU002        T=8999 M=8969 A=8969 AZ=8969
+  XW5005       T=1499 M=None A=1470 AZ=None
+[SCRAPE] Loading cached search results for supplementary fuzzy matching...
+elapsed: 21.2 s
+XU011 T= 3099 M= 3119 A= 3279 AZ= 3099 complete fuzzy: False False
+XU002 T= 8999 M= 8969 A= 8969 AZ= 8969 complete fuzzy: False False
+XW5005 T= 1499 M= None A= 1470 AZ= None complete fuzzy: False False
