@@ -1,0 +1,3 @@
+_RUN_SCRAPE CALLED
+[SCRAPE] URL mapping: 1 SKUs loaded from data/url_mapping.xlsx
+[SCRAPE] Ajio cache:  45 products loaded from data/ajio_search_results.json

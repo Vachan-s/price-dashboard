@@ -7,8 +7,8 @@ _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 async def scrape_myntra_price_with_page(page, url: str) -> dict:
     await page.set_extra_http_headers({"User-Agent": _USER_AGENT})
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1500)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(3000)
 
         price_el = await page.query_selector("span.pdp-price strong")
         price = await price_el.inner_text() if price_el else "Not found"
@@ -24,7 +24,9 @@ async def scrape_myntra_price_with_page(page, url: str) -> dict:
 
 async def scrape_myntra_price(url: str) -> dict:
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # headless=False: Myntra hangs/times out on headless Chrome navigations
+        # (confirmed — headed mode succeeds in <1s, headless hangs to timeout).
+        browser = await p.chromium.launch(headless=False, args=["--disable-http2"])
         page = await browser.new_page()
         try:
             return await scrape_myntra_price_with_page(page, url)
@@ -33,6 +35,6 @@ async def scrape_myntra_price(url: str) -> dict:
 
 
 if __name__ == "__main__":
-    url = "https://www.myntra.com/sports-shoes/ten+x+you/ten-x-you-unisex-switch-og-20-lightweight-cricket-shoes/40099353/buy"
+    url = "https://www.myntra.com/sports-shoes/ten+x+you/ten-x-you-unisex-aeonic-recovery-running-shoes-with-cushioned-arch-support/39048046/buy"
     result = asyncio.run(scrape_myntra_price(url))
     print(result)

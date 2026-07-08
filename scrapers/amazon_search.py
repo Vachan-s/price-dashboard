@@ -270,5 +270,65 @@ async def scrape_amazon_search(store_url: str = STORE_URL) -> list:
     return products
 
 
+async def scrape_amazon_price_with_page(page, url: str) -> dict:
+    """Scrape name + price off an individual Amazon product (dp) page.
+    Same {url, name, price, status} shape as scrapers/tenxyou.py and
+    scrapers/myntra.py's single-product scrapers, so app.py can treat all
+    three platforms uniformly."""
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
+
+        content = (await page.content()).lower()
+        if any(marker in content for marker in CAPTCHA_MARKERS):
+            return {"url": url, "name": None, "price": None, "status": "error: captcha"}
+
+        name_el = await page.query_selector("#productTitle")
+        name = (await name_el.inner_text()).strip() if name_el else "Not found"
+
+        price = None
+        for sel in (
+            "#corePrice_feature_div .a-price .a-offscreen",
+            "#corePriceDisplay_desktop_feature_div span.a-price-whole",
+            "#priceblock_ourprice",
+            "#priceblock_dealprice",
+        ):
+            el = await page.query_selector(sel)
+            if el:
+                text = (await el.inner_text()).strip()
+                if text:
+                    price = text
+                    break
+        if price is None:
+            for el in await page.query_selector_all(".a-price .a-offscreen"):
+                text = (await el.inner_text()).strip()
+                if text:
+                    price = text
+                    break
+        price = price or "Not found"
+
+        return {"url": url, "name": name, "price": price, "status": "success"}
+
+    except Exception as e:
+        return {"url": url, "name": None, "price": None, "status": f"error: {str(e)}"}
+
+
+async def scrape_amazon_price(url: str) -> dict:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1920, "height": 1080},
+        )
+        page = await context.new_page()
+        try:
+            return await scrape_amazon_price_with_page(page, url)
+        finally:
+            await browser.close()
+
+
 if __name__ == "__main__":
     asyncio.run(scrape_amazon_search_page())

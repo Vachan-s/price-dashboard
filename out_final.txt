@@ -1,0 +1,7 @@
+_RUN_SCRAPE CALLED
+[SCRAPE] URL mapping: 2 SKUs loaded from data/url_mapping.xlsx
+[SCRAPE] Ajio cache:  45 products loaded from data/ajio_search_results.json
+  XU011        T=3099 M=3119 A=3279 AZ=3099
+  XU002        T=8999 M=8969 A=8969 AZ=8969
+XU011 T= 3099 M= 3119 A= 3279 AZ= 3099 complete
+XU002 T= 8999 M= 8969 A= 8969 AZ= 8969 complete

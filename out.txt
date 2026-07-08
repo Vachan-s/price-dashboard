@@ -1,0 +1,82 @@
+_RUN_SCRAPE CALLED
+[SCRAPE] Myntra:  50 raw → 32 deduped
+[SCRAPE] Ajio:    78 raw → 35 deduped
+[SCRAPE] Amazon:  48 raw → 48 deduped
+[SCRAPE] TenXYou: 146 raw → 146 deduped
+[SCRAPE] Style mapping: 94 curated SKUs loaded
+  XM1000         T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.15 Ten X You Men Regular Fit  AZ=0.20 Men’s Flex Collective 7” 
+  XM1003         T=1.00 Men's Long Distance Running Te  M=0.27 Ten x You Men Run the Wor  A=0.20 Ten X You Men Relaxed Fit  AZ=0.22 Men’s Long Distance Runni
+  XM1004         T=1.00 Men's Loose Fit Tee  M=0.22 Ten x You Men 365 Sport t  A=0.25 Ten X You Men Regular Fit  AZ=0.00 NO MATCH
+  XM1005         T=1.00 Men's Workout-from-Home Relaxe  M=0.22 Ten x You Men 365 Sport t  A=0.25 Ten X You Men Regular Fit  AZ=0.00 NO MATCH
+  XM1009         T=1.00 Men's Street Sport Oversized T  M=0.00 NO MATCH  A=0.15 Ten X You Men Typographic  AZ=0.10 Men’s Oversized Street Sp
+  XM1012         T=1.00 Men's Ultra-lightweight Tempo   M=0.09 Ten x You Men Run the Wor  A=0.18 Ten X You Men Relaxed Fit  AZ=0.18 Men’s Ultra-Lightweight R
+  XM1045         T=1.00 Men's Long Distance Running Te  M=0.15 Ten x You Men Run the Wor  A=0.20 Ten X You Men Relaxed Fit  AZ=0.22 Men’s Long Distance Runni
+  XM2000         T=1.00 Men's Ultra-lightweight Tempo   M=0.36 Ten x You Men Run the Wor  A=0.18 Ten X You Men Relaxed Fit  AZ=0.18 Men’s Ultra-Lightweight R
+  XM2004         T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.38 Ten X You Men Relaxed Fit  AZ=0.11 Men’s Oversized Street Sp
+  XM2005         T=1.00 Men's Muscle Tank  M=0.00 NO MATCH  A=0.12 Ten X You Men NOX Legacy   AZ=0.00 NO MATCH
+  XM2006         T=1.00 Men's Sports Tank  M=0.00 NO MATCH  A=0.12 Ten X You Men NOX Legacy   AZ=0.00 NO MATCH
+  XM3006         T=0.00 NO MATCH  M=0.09 Ten x You Men 365 Sport t  A=0.22 Ten X You Men Regular Fit  AZ=0.00 NO MATCH
+  XM3007         T=0.00 NO MATCH  M=0.10 Ten x You Men 365 Sport t  A=0.18 Ten X You Men Regular Fit  AZ=0.11 Men’s Flex Collective 7” 
+  XM3007T        T=0.00 NO MATCH  M=0.09 Ten x You Men 365 Sport t  A=0.22 Ten X You Men Regular Fit  AZ=0.00 NO MATCH
+  XM5005         T=0.00 NO MATCH  M=0.22 Ten x You Men 365 Sport t  A=0.38 Ten X You Men Relaxed Fit  AZ=0.11 Men’s Oversized Street Sp
+  XM5006         T=0.00 NO MATCH  M=0.25 Ten x You Men 365 Sport t  A=0.20 Ten X You Men Regular Fit  AZ=0.33 Men’s Flex Collective 7” 
+  XM5007         T=1.00 Men's 5" Lined Running Shorts  M=1.00 Ten x You Men Run the Wor  A=0.33 Ten X You Men Relaxed Fit  AZ=0.22 Men’s Run The World 7” Ru
+  XM5008         T=1.00 Men's 7" Lined Running Shorts  M=0.50 Ten x You Men Run the Wor  A=0.33 Ten X You Men Relaxed Fit  AZ=0.22 Men’s Run The World 7” Ru
+  XM5009         T=1.00 Men's Workout Shorts  M=1.00 Ten x You Men 365 Sport t  A=0.29 Ten X You Men Regular Fit  AZ=0.12 Men’s Run The World 7” Ru
+  XW1000         T=0.00 NO MATCH  M=0.09 Ten x You Women Slim Fit   A=0.22 Ten X You Women Training   AZ=0.20 Women's 'Flex Collective'
+  XW1003         T=1.00 Women's Long Distance Running   M=0.27 Ten x You Women Run the W  A=0.20 Ten X You Women Relaxed F  AZ=0.22 Women's Long Distance Run
+  XW1009         T=1.00 Women's Street Sport Oversized  M=0.08 Ten x You Women Slim Fit   A=0.15 Ten X You Women Typograph  AZ=0.22 Women's Street Sport Over
+  XW1010         T=1.00 Women's Relaxed Fit Tee  M=0.08 Ten x You Women Slim Fit   A=0.38 Ten X You Women Relaxed F  AZ=0.25 Women's Relaxed Fit Boat 
+  XW1011         T=0.00 NO MATCH  M=1.00 Ten x You Women Slim Fit   A=0.27 Ten X You Women Logo Prin  AZ=0.11 Women's Street Sport Over
+  XW1012         T=1.00 Women's Ultra-lightweight Temp  M=0.10 Ten x You Women Slim Fit   A=0.18 Ten X You Women Relaxed F  AZ=0.30 Women's Ultra-Lightweight
+  XW1014         T=1.00 Women's Long Distance Running   M=0.15 Ten x You Women Run the W  A=0.20 Ten X You Women Relaxed F  AZ=0.22 Women's Long Distance Run
+  XW2003         T=1.00 Women's Muscle Tank  M=0.09 Ten x You Women Slim Fit   A=0.22 Ten X You Women Ribbed Re  AZ=0.12 Women's Street Sport Over
+  XW2004         T=1.00 Women's Ribbed Tank  M=0.08 Ten x You Women Slim Fit   A=0.38 Ten X You Women Ribbed Re  AZ=0.12 Women's Street Sport Over
+  XW2005         T=1.00 Women's Ultra-lightweight Temp  M=0.36 Ten x You Women Run the W  A=0.23 Ten X You Women Regular F  AZ=0.30 Women's Ultra-Lightweight
+  XW3007R        T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3007T        T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3010R        T=1.00 Flowstate Kick Flare Pants  M=0.08 Ten x You Women Straight   A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3010T        T=1.00 Flowstate Kick Flare Pants  M=0.08 Ten x You Women Straight   A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3013R        T=1.00 Flowstate Flare Pants  M=0.09 Ten x You Women Straight   A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3013T        T=1.00 Flowstate Flare Pants  M=0.09 Ten x You Women Straight   A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3014R        T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3014T        T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XW3016         T=0.00 NO MATCH  M=0.40 Ten x You Women Straight   A=0.20 Ten X You Women Relaxed F  AZ=0.10 Women's Street Sport Over
+  XW5002         T=1.00 Women's 4" Lined Running Short  M=0.50 Ten x You Women Run the W  A=0.33 Ten X You Women Relaxed F  AZ=0.10 Women's Street Sport Over
+  XW5003         T=0.00 NO MATCH  M=0.25 Ten x You Women 365 Sport  A=0.38 Ten X You Women Training   AZ=0.20 Women's 'Flex Collective'
+  XW5005         T=1.00 Women's 6" Lined Running Short  M=1.00 Ten x You Women Run the W  A=0.33 Ten X You Women Relaxed F  AZ=0.10 Women's Street Sport Over
+  XW5006         T=1.00 Women's Workout Shorts  M=1.00 Ten x You Women 365 Sport  A=0.33 Ten X You Women Training   AZ=0.12 Women's Street Sport Over
+  XW5007         T=1.00 Sculptex High Impact Biker Sho  M=0.12 Ten x You Women 365 Sport  A=0.12 Ten X You Women Training   AZ=0.00 NO MATCH
+  XU002          T=1.00 Centurion Pro Batsman Shoe  M=0.18 Ten x You Switch OG 2.0 C  A=0.43 Ten X You Men Centurion P  AZ=0.12 Men's Centurion Pro Batsm
+  XU003          T=1.00 Unisex Switch Fan Edit Multi-S  M=1.00 Ten x You Unisex OG Sport  A=0.29 Ten X You Men All-Rounder  AZ=0.00 NO MATCH
+  XU004          T=0.00 NO MATCH  M=0.50 Ten x You Unisex OG Sport  A=0.88 Ten X You Unisex Switch F  AZ=0.44 By Sachin Tendulkar Unise
+  XU005          T=1.00 Unisex Aeonic Running Shoe  M=1.00 Ten x You Unisex Aeonic R  A=0.80 Ten X You Unisex Aeonic R  AZ=0.12 Mens Xu006 Sneaker
+  XU006          T=1.00 Unisex Zenflo Walking Shoe  M=1.00 Ten x You Unisex Walking   A=0.80 Ten X You Unisex Zenflo W  AZ=0.29 Mens Xu006 Sneaker
+  XU007          T=1.00 Unisex Crossover Slip On Sneak  M=0.27 Ten x You Unisex Gym to S  A=0.67 Ten X You Unisex Crossove  AZ=0.25 Mens Xu006 Sneaker
+  XU008          T=1.00 Unisex Sundowner Denim Sneaker  M=0.17 Ten x You Switch Fan Edit  A=0.80 Ten X You Unisex Sundowne  AZ=0.29 Mens Xu006 Sneaker
+  XU009          T=1.00 NOX Legacy Sneaker  M=1.00 Ten x You Unisex NOX Lega  A=0.60 Ten X You Men NOX Legacy   AZ=0.14 By Sachin Tendulkar Unise
+  XU011          T=1.00 All-rounder Cricket Shoe  M=0.29 Ten x You Unisex Cricket   A=0.67 Ten X You Men All-Rounder  AZ=0.25 By Sachin Tendulkar Unise
+  XU012          T=1.00 Unisex Switch OG 2.0 Multi-Spo  M=1.00 Ten x You Switch OG 2.0 C  A=0.45 Ten X You Unisex Switch F  AZ=0.40 By Sachin Tendulkar Unise
+  XU013          T=0.00 NO MATCH  M=1.00 Ten x You Switch Fan Edit  A=0.40 Ten X You Unisex Switch F  AZ=0.10 Mens Xu006 Sneaker
+  XU014          T=1.00 Unisex Reset Slides  M=0.00 NO MATCH  A=0.50 Ten X You Unisex Logo Pri  AZ=0.14 Mens Xu006 Sneaker
+  XU015          T=1.00 Unisex Reset Velcro Slides  M=0.12 Ten x You Unisex Thong Fl  A=0.43 Ten X You Unisex Logo Pri  AZ=0.12 Mens Xu006 Sneaker
+  XU016          T=1.00 Pivot Thong Flip Flops  M=1.00 Ten x You Unisex Thong Fl  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XU017          T=1.00 All-rounder Swing Cricket Shoe  M=1.00 Ten x You Unisex Cricket   A=0.57 Ten X You Men All-Rounder  AZ=0.22 By Sachin Tendulkar Unise
+  XU018          T=1.00 Reboot Dual density Slides  M=0.00 NO MATCH  A=0.11 Ten X You Unisex Logo Pri  AZ=0.00 NO MATCH
+  XU019          T=0.00 NO MATCH  M=0.22 Ten x You Switch OG 2.0 C  A=0.29 Ten X You Men All-Rounder  AZ=0.00 NO MATCH
+  XU089          T=0.00 NO MATCH  M=0.14 Ten x You Unisex NOX Lega  A=0.29 Ten X You Men NOX Legacy   AZ=0.12 By Sachin Tendulkar Unise
+  XU098          T=1.00 Nox - The Desert Storm  M=0.07 Ten x You Unisex NOX Lega  A=0.12 Ten X You Men NOX Legacy   AZ=0.00 NO MATCH
+  SRLB           T=0.10 Reboot Dual density Slides  M=0.33 Ten x You Unisex Aeonic R  A=0.80 Ten X You Unisex Aeonic R  AZ=0.12 Mens Xu006 Sneaker
+  SRTBAT2026     T=0.00 NO MATCH  M=0.33 Ten x You Unisex Aeonic R  A=0.80 Ten X You Unisex Aeonic R  AZ=0.12 Mens Xu006 Sneaker
+  XA1001         T=1.00 Running Cap  M=1.00 Ten x You Unisex Snapback  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA1003         T=1.00 Club Cap  M=0.29 Ten x You Unisex Snapback  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA1006         T=1.00 Trucker Cap  M=1.00 Ten x You Unisex Snapback  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2002         T=1.00 Everyday Low Ankle Socks - Men  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2003         T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2006         T=1.00 Everyday High Ankle Socks (Pac  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2007         T=1.00 Cricket Crew Socks  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2008         T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XA2009         T=0.00 NO MATCH  M=0.00 NO MATCH  A=0.00 NO MATCH  AZ=0.00 NO MATCH
+  XU001          T=1.00 Footwork Pulse Cricket Insoles  M=0.09 Ten x You Switch OG 2.0 C  A=0.11 Ten X You Men All-Rounder  AZ=0.00 NO MATCH
+  XU010          T=1.00 Footwork Grip Metal Spikes  M=0.06 Ten x You Unisex Cricket   A=0.00 NO MATCH  AZ=0.00 NO MATCH
+{'partial': 19, 'success': 49, 'error': 7} 75

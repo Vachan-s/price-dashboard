@@ -5,12 +5,16 @@ import os
 import re
 import subprocess
 import sys
-from collections import Counter
 from datetime import datetime, timezone
 from io import StringIO
 
 import openpyxl
 from flask import Flask, jsonify, make_response, render_template
+from playwright.async_api import async_playwright
+
+from scrapers.amazon_search import scrape_amazon_price_with_page
+from scrapers.myntra import scrape_myntra_price_with_page
+from scrapers.tenxyou import scrape_tenxyou_price_with_page
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,52 +26,18 @@ if sys.platform == "win32":
 
 app = Flask(__name__)
 
-XLSX_PATH = "data/sku_mapping.xlsx"
-RESULTS_PATH = "data/results.json"
-# ── Matching helpers ───────────────────────────────────────────────────────────
+XLSX_PATH        = "data/sku_mapping.xlsx"
+URL_MAPPING_PATH = "data/url_mapping.xlsx"
+RESULTS_PATH     = "data/results.json"
 
-_BRAND_WORDS = {"ten", "x", "you"}
+AMAZON_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
+FUZZY_MATCH_THRESHOLD = 0.6
 
-def _stem(word: str) -> str:
-    return word[:-1] if word.endswith("s") and len(word) > 3 else word
-
-
-def normalize(text: str) -> set:
-    """Normalize a SKU product name into a stemmed word set."""
-    text = (text or "").lower()
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    return {_stem(w) for w in text.split()}
-
-
-def _slug_words(url: str) -> set:
-    """Extract meaningful words from the product-name portion of a URL slug."""
-    path = re.sub(r"https?://[^/]+", "", url.split("?")[0].rstrip("/"))
-    words = set()
-    for part in re.split(r"[/\-]", path):
-        p = part.lower()
-        if len(p) >= 3 and not p.isdigit() and p not in _BRAND_WORDS:
-            words.add(_stem(p))
-    return words
-
-
-def _slug_base(url: str) -> str:
-    """Return a canonical key for grouping color/size variants of the same product."""
-    url = url.split("?")[0]
-    # Ajio: .../p/469817206_green → "469817206"
-    m = re.search(r"/p/(\d+)", url)
-    if m:
-        return m.group(1)
-    # Amazon: .../dp/B0G53JQL2L/ref=sr_1_5 → "B0G53JQL2L"
-    m = re.search(r"/dp/([A-Z0-9]{10})", url)
-    if m:
-        return m.group(1)
-    # Myntra: .../product-slug/39062448/buy → "product-slug"
-    parts = [p for p in url.split("/") if p]
-    for i, part in enumerate(parts):
-        if part.isdigit() and i > 0:
-            return parts[i - 1]
-    return url
+# ── Price helpers ────────────────────────────────────────────────────────────
 
 
 def _parse_price(price_str) -> float | None:
@@ -93,94 +63,125 @@ def _normalize_price(price_str) -> int | None:
     return int(v) if v else None
 
 
-def dedup_products(products: list) -> list:
-    """Group color/size variants by URL slug base; keep one entry per product.
-    Price = mode across variants; if no clear mode, take the median."""
-    from collections import defaultdict
-    groups: dict = defaultdict(list)
-    for p in products:
-        groups[_slug_base(p.get("url", ""))].append(p)
+def _norm_url(url: str) -> str:
+    """Normalize a URL for equality comparison: strip query string and trailing slash."""
+    return (url or "").split("?")[0].rstrip("/")
 
-    result = []
-    for group in groups.values():
-        parsed = [(_parse_price(p["price"]), p) for p in group]
-        parsed = [(n, p) for n, p in parsed if n is not None]
-        if not parsed:
-            result.append(group[0])
+
+# ── Supplementary fuzzy-matching helpers (used only for products that aren't
+# in url_mapping.xlsx yet — see _apply_supplementary_fuzzy_matching) ─────────
+
+
+def _stem(word: str) -> str:
+    return word[:-1] if word.endswith("s") and len(word) > 3 else word
+
+
+def normalize(text: str) -> set:
+    """Normalize a product name into a stemmed word set."""
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return {_stem(w) for w in text.split()}
+
+
+def _fuzzy_score(a: str, b: str) -> float:
+    wa, wb = normalize(a), normalize(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+# ── URL mapping ──────────────────────────────────────────────────────────────
+
+
+def _split_urls(cell) -> list[str]:
+    """Split a (possibly comma-separated) cell into a list of clean, https:// URLs."""
+    if not cell:
+        return []
+    text = str(cell).strip()
+    if not text:
+        return []
+    urls = []
+    for part in re.split(r"\s*,\s*", text):
+        u = part.strip()
+        if not u:
             continue
-        counts = Counter(n for n, _ in parsed)
-        max_count = max(counts.values())
-        modes = [n for n, c in counts.items() if c == max_count]
-        if max_count > 1 and len(modes) == 1:
-            rep_num = modes[0]
-        else:
-            rep_num = sorted(n for n, _ in parsed)[len(parsed) // 2]
-        rep = next((p for n, p in parsed if n == rep_num), group[0])
-        result.append(rep)
-    return result
+        if not re.match(r"^https?://", u, re.I):
+            u = "https://" + u
+        urls.append(u)
+    return urls
 
 
-def find_best_match(product_name: str, candidates: list) -> tuple:
-    """Match SKU name (normalized) against URL slug words of each candidate.
-    Returns (best_candidate, score). Returns (None, 0.0) if all scores are 0."""
-    target = normalize(product_name)
-    best_score, best = 0.0, None
-    for c in candidates:
-        cand = _slug_words(c.get("url", "")) or normalize(c.get("name", ""))
-        if target and cand:
-            score = len(target & cand) / len(target | cand)
-            if score > best_score:
-                best_score, best = score, c
-    return (best, round(best_score, 4)) if best_score > 0.0 else (None, 0.0)
+def _load_url_mapping() -> dict:
+    """Load data/url_mapping.xlsx into {SKU: {display_name, tenxyou, amazon, ajio, myntra}}.
+    A SKU may span multiple rows (e.g. several TenXYou style variants sharing one
+    SKU) — URLs from every matching row are pooled together into that SKU's lists."""
+    mapping: dict = {}
+    if not os.path.exists(URL_MAPPING_PATH):
+        return mapping
+    try:
+        wb = openpyxl.load_workbook(URL_MAPPING_PATH, data_only=True)
+        ws = wb.active
+        headers = [c.value for c in ws[1]]
+        col = {h: i for i, h in enumerate(headers)}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            sku = row[col["SKU"]]
+            if not sku:
+                continue
+            sku = str(sku).strip()
+            if not sku:
+                continue
+            entry = mapping.setdefault(sku, {
+                "display_name": "",
+                "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
+            })
+            display_name = row[col["TenXYou Display Name"]]
+            if display_name and not entry["display_name"]:
+                entry["display_name"] = str(display_name).strip()
+            entry["tenxyou"].extend(_split_urls(row[col["TenXYou URL"]]))
+            entry["amazon"].extend(_split_urls(row[col["AMAZON"]]))
+            entry["ajio"].extend(_split_urls(row[col["AJIO"]]))
+            entry["myntra"].extend(_split_urls(row[col["MYNTRA"]]))
+    except Exception as e:
+        print(f"[URL MAPPING ERROR] {URL_MAPPING_PATH}: {e}", flush=True)
+        return {}
+    return mapping
 
 
-def find_tenxyou_anchor(product_name: str, tenxyou_products: list) -> dict | None:
-    """Find the closest TenXYou product by plain name word-overlap (no threshold —
-    every candidate is already a TenXYou product, so even a weak match is useful
-    as an anchor query for Myntra/Ajio matching)."""
-    target = normalize(product_name)
-    if not target or not tenxyou_products:
-        return None
-    best_score, best = -1.0, None
-    for p in tenxyou_products:
-        cand = normalize(p.get("name", ""))
-        union = target | cand
-        score = len(target & cand) / len(union) if union else 0.0
-        if score > best_score:
-            best_score, best = score, p
-    return best
-
-
-_CATEGORY_KEYWORDS = {
-    "XU": ("shoe", "sneaker", "slides", "flip", "slipper", "clog", "sandal"),
-    "XA": ("cap", "sock", "insole", "spike"),
-}
-
-
-def filter_by_category(sku: str, products: list) -> list:
-    """Restrict candidates to those matching the SKU prefix's category. Unrecognized
-    prefixes are left unfiltered."""
-    prefix = (sku or "").strip().upper()[:2]
-
-    def name_of(p):
-        return (p.get("name") or "").lower()
-
-    if prefix == "XM":
-        return [p for p in products if "men" in name_of(p) and "women" not in name_of(p)]
-    if prefix == "XW":
-        return [p for p in products if "women" in name_of(p) or "woman" in name_of(p)]
-    if prefix in _CATEGORY_KEYWORDS:
-        keywords = _CATEGORY_KEYWORDS[prefix]
-        return [p for p in products if any(k in name_of(p) for k in keywords)]
-    return products
+def _load_sku_mapping_fallback() -> dict:
+    """Load data/sku_mapping.xlsx as a fallback source for SKUs absent from
+    url_mapping.xlsx — its own Myntra/Ajio/TenXYou URL columns (there's no
+    Amazon column on this older sheet) become that SKU's scrape URLs."""
+    fallback: dict = {}
+    if not os.path.exists(XLSX_PATH):
+        return fallback
+    try:
+        wb = openpyxl.load_workbook(XLSX_PATH, data_only=True)
+        ws = wb.active
+        headers = [c.value for c in ws[1]]
+        col = {h: i for i, h in enumerate(headers)}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            sku = row[col["SKU"]]
+            if not sku:
+                continue
+            sku = str(sku).strip()
+            fallback[sku] = {
+                "display_name": str(row[col["Product Name"]] or "").strip(),
+                "tenxyou": _split_urls(row[col["TenXYou URL"]]),
+                "amazon":  [],
+                "ajio":    _split_urls(row[col["Ajio URL"]]),
+                "myntra":  _split_urls(row[col["Myntra URL"]]),
+            }
+    except Exception as e:
+        print(f"[SKU MAPPING FALLBACK ERROR] {XLSX_PATH}: {e}", flush=True)
+        return {}
+    return fallback
 
 
 # ── Core async scrape ──────────────────────────────────────────────────────────
 
-MYNTRA_CACHE_PATH   = "data/myntra_search_results.json"
-AJIO_CACHE_PATH     = "data/ajio_search_results.json"
-AMAZON_CACHE_PATH   = "data/amazon_search_results.json"
-TENXYOU_CACHE_PATH  = "data/tenxyou_search_results.json"
+MYNTRA_CACHE_PATH  = "data/myntra_search_results.json"
+AJIO_CACHE_PATH    = "data/ajio_search_results.json"
+AMAZON_CACHE_PATH  = "data/amazon_search_results.json"
 
 
 def _load_cache(path: str) -> list:
@@ -196,88 +197,217 @@ def _load_cache(path: str) -> list:
         return []
 
 
+async def _scrape_lowest(opener, urls: list, scrape_fn, sku: str = "", debug_label: str = "") -> tuple:
+    """Scrape every URL in `urls` (via a fresh page from `opener`, a Browser or
+    BrowserContext) with scrape_fn(page, url), and return (lowest_price, its_url).
+    Returns (None, None) if urls is empty or none scraped a price successfully.
+    If debug_label is set, logs SKU/URL/error for every URL that fails to yield
+    a price (used for Myntra debugging — see _run_scrape)."""
+    if not urls:
+        return None, None
+    best_price, best_url = None, None
+    for url in urls:
+        page = await opener.new_page()
+        error_msg = None
+        try:
+            result = await scrape_fn(page, url)
+            if result.get("status") == "success":
+                price = _normalize_price(result.get("price"))
+                if price is None:
+                    error_msg = f"no parsable price (raw price: {result.get('price')!r})"
+            else:
+                price = None
+                error_msg = result.get("status")
+        except Exception as e:
+            print(f"[SCRAPE ERROR] {url}: {e}", flush=True)
+            price = None
+            error_msg = str(e)
+        finally:
+            await page.close()
+
+        if price is None and debug_label:
+            print(f"[{debug_label} DEBUG] SKU={sku}  URL={url}\n    -> {error_msg}", flush=True)
+
+        if price is not None and (best_price is None or price < best_price):
+            best_price, best_url = price, url
+    return best_price, best_url
+
+
+def _lookup_ajio_lowest(urls: list, ajio_by_url: dict) -> tuple:
+    """Ajio product pages are blocked by Akamai, so look prices up from the
+    cached search-results JSON instead of scraping the page directly."""
+    if not urls:
+        return None, None
+    best_price, best_url = None, None
+    for url in urls:
+        product = ajio_by_url.get(_norm_url(url))
+        if not product:
+            continue
+        price = _normalize_price(product.get("price"))
+        if price is not None and (best_price is None or price < best_price):
+            best_price, best_url = price, url
+    return best_price, best_url
+
+
+def _apply_supplementary_fuzzy_matching(results: list, raw_myntra: list, raw_ajio: list,
+                                         raw_amazon: list, mapped_urls: dict) -> None:
+    """For each platform, look at scraped search-results-cache products whose URL
+    doesn't already appear in url_mapping.xlsx, and try to fuzzy-match them
+    (word-overlap, >= FUZZY_MATCH_THRESHOLD confidence) against SKUs that still
+    have no price for that platform. Mutates `results` in place. This is how new
+    marketplace listings that aren't in the URL mapping sheet yet still show up."""
+    platform_specs = [
+        ("myntra", raw_myntra, "myntra_price", "matched_myntra_url", "myntra_fuzzy_match"),
+        ("ajio",   raw_ajio,   "ajio_price",   "matched_ajio_url",   "ajio_fuzzy_match"),
+        ("amazon", raw_amazon, "amazon_price", "matched_amazon_url", "amazon_fuzzy_match"),
+    ]
+
+    for platform, raw_products, price_key, url_key, flag_key in platform_specs:
+        mapped = mapped_urls.get(platform, set())
+        unmatched = [p for p in raw_products if _norm_url(p.get("url", "")) not in mapped]
+        if not unmatched:
+            continue
+
+        candidates = [r for r in results if r.get(price_key) is None]
+        for r in candidates:
+            best_score, best_product = 0.0, None
+            for p in unmatched:
+                score = _fuzzy_score(r["name"], p.get("name", ""))
+                if score > best_score:
+                    best_score, best_product = score, p
+            if best_product and best_score >= FUZZY_MATCH_THRESHOLD:
+                price = _normalize_price(best_product.get("price"))
+                if price is not None:
+                    r[price_key] = price
+                    r[url_key] = best_product["url"]
+                    r[flag_key] = True
+
+
+def _compute_status(r: dict) -> str:
+    """complete — every platform with a mapped URL returned a price.
+    partial — at least one price came back (URL-scraped or fuzzy-matched), but
+    not every mapped platform succeeded.
+    error — no prices at all.
+    Platforms with no URL mapped (N/A) don't count against the SKU either way."""
+    platforms = [
+        (r["tenxyou_has_url"], r["tenxyou_price"]),
+        (r["myntra_has_url"],  r["myntra_price"]),
+        (r["ajio_has_url"],    r["ajio_price"]),
+        (r["amazon_has_url"],  r["amazon_price"]),
+    ]
+    mapped = [price for has_url, price in platforms if has_url]
+    got    = [price for price in mapped if price is not None]
+    any_price = any(price is not None for _, price in platforms)
+
+    if mapped and len(got) == len(mapped):
+        return "complete"
+    if any_price:
+        return "partial"
+    return "error"
+
+
 async def _run_scrape(rows: list) -> list:
+    """rows: [(sku, name), ...] from sku_mapping.xlsx — used as a display-name
+    fallback and to pick up any SKUs that aren't in url_mapping.xlsx at all."""
     print("_RUN_SCRAPE CALLED", flush=True)
-    raw_myntra  = _load_cache(MYNTRA_CACHE_PATH)
-    raw_ajio    = _load_cache(AJIO_CACHE_PATH)
-    raw_amazon  = _load_cache(AMAZON_CACHE_PATH)
-    raw_tenxyou = _load_cache(TENXYOU_CACHE_PATH)
 
-    myntra_products  = dedup_products(raw_myntra)
-    ajio_products    = dedup_products(raw_ajio)
-    amazon_products  = dedup_products(raw_amazon)
-    tenxyou_products = dedup_products(raw_tenxyou)
+    url_mapping  = _load_url_mapping()
+    sku_fallback = _load_sku_mapping_fallback()
+    sheet_names  = {sku: name for sku, name in rows}
 
-    print(f"[SCRAPE] Myntra:  {len(raw_myntra)} raw → {len(myntra_products)} deduped", flush=True)
-    print(f"[SCRAPE] Ajio:    {len(raw_ajio)} raw → {len(ajio_products)} deduped", flush=True)
-    print(f"[SCRAPE] Amazon:  {len(raw_amazon)} raw → {len(amazon_products)} deduped", flush=True)
-    print(f"[SCRAPE] TenXYou: {len(raw_tenxyou)} raw → {len(tenxyou_products)} deduped", flush=True)
+    raw_myntra = _load_cache(MYNTRA_CACHE_PATH)
+    raw_ajio   = _load_cache(AJIO_CACHE_PATH)
+    raw_amazon = _load_cache(AMAZON_CACHE_PATH)
+
+    ajio_by_url = {_norm_url(p.get("url", "")): p for p in raw_ajio}
+
+    print(f"[SCRAPE] URL mapping: {len(url_mapping)} SKUs loaded from {URL_MAPPING_PATH}", flush=True)
+    print(f"[SCRAPE] Ajio cache:  {len(raw_ajio)} products loaded from {AJIO_CACHE_PATH}", flush=True)
+
+    # url_mapping SKUs drive the loop; any sku_mapping-only SKU is appended as a fallback
+    ordered_skus = list(url_mapping.keys())
+    for sku in sheet_names:
+        if sku not in url_mapping:
+            ordered_skus.append(sku)
 
     results = []
-    for sku, name in rows:
-        tenxyou_match, t_score = find_best_match(name, tenxyou_products)
 
-        anchor = find_tenxyou_anchor(name, tenxyou_products)
-        query_name = anchor["name"] if anchor else name
-
-        myntra_candidates = filter_by_category(sku, myntra_products)
-        ajio_candidates   = filter_by_category(sku, ajio_products)
-        amazon_candidates = filter_by_category(sku, amazon_products)
-
-        myntra_match, m_score  = find_best_match(query_name, myntra_candidates)
-        ajio_match,   a_score  = find_best_match(query_name, ajio_candidates)
-        amazon_match, az_score = find_best_match(query_name, amazon_candidates)
-
-        tenxyou_price       = _normalize_price(tenxyou_match["price"]) if tenxyou_match else None
-        matched_tenxyou_url = tenxyou_match["url"]   if tenxyou_match else None
-        myntra_price        = _normalize_price(myntra_match["price"])  if myntra_match  else None
-        matched_myntra_url  = myntra_match["url"]    if myntra_match  else None
-        ajio_price          = _normalize_price(ajio_match["price"])    if ajio_match    else None
-        matched_ajio_url    = ajio_match["url"]      if ajio_match    else None
-        amazon_price        = _normalize_price(amazon_match["price"])  if amazon_match  else None
-        matched_amazon_url  = amazon_match["url"]    if amazon_match  else None
-
-        comp_prices = [p for p in [myntra_price, ajio_price, amazon_price] if p is not None]
-        lowest_comp_price = min(comp_prices) if comp_prices else None
-
-        print(
-            f"  {sku:<14} T={t_score:.2f} {(tenxyou_match['name'] if tenxyou_match else 'NO MATCH')[:30]}"
-            f"  M={m_score:.2f} {(myntra_match['name'] if myntra_match else 'NO MATCH')[:25]}"
-            f"  A={a_score:.2f} {(ajio_match['name'] if ajio_match else 'NO MATCH')[:25]}"
-            f"  AZ={az_score:.2f} {(amazon_match['name'] if amazon_match else 'NO MATCH')[:25]}",
-            flush=True,
+    async with async_playwright() as p:
+        tenxyou_browser = await p.chromium.launch(headless=True)
+        # headless=False: Myntra hangs/times out on headless Chrome navigations
+        # (confirmed — headed mode succeeds in <1s, headless hangs to timeout).
+        myntra_browser = await p.chromium.launch(headless=False, args=["--disable-http2"])
+        amazon_browser = await p.chromium.launch(
+            headless=False, args=["--disable-blink-features=AutomationControlled"]
+        )
+        amazon_context = await amazon_browser.new_context(
+            user_agent=AMAZON_USER_AGENT, viewport={"width": 1920, "height": 1080}
         )
 
-        t_ok  = tenxyou_price is not None
-        m_ok  = myntra_price  is not None
-        a_ok  = ajio_price    is not None
-        az_ok = amazon_price  is not None
+        try:
+            for sku in ordered_skus:
+                entry = url_mapping.get(sku) or sku_fallback.get(sku) or {
+                    "display_name": "", "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
+                }
+                name = entry["display_name"] or sheet_names.get(sku, sku)
 
-        if t_ok and (m_ok or a_ok or az_ok):
-            status = "success"
-        elif t_ok or m_ok or a_ok or az_ok:
-            status = "partial"
-        else:
-            status = "error"
+                tenxyou_urls = entry["tenxyou"]
+                myntra_urls  = entry["myntra"]
+                ajio_urls    = entry["ajio"]
+                amazon_urls  = entry["amazon"]
 
-        results.append({
-            "sku":                 sku,
-            "name":                name,
-            "tenxyou_price":       tenxyou_price,
-            "myntra_price":        myntra_price,
-            "ajio_price":          ajio_price,
-            "amazon_price":        amazon_price,
-            "lowest_comp_price":   lowest_comp_price,
-            "matched_tenxyou_url": matched_tenxyou_url,
-            "matched_myntra_url":  matched_myntra_url,
-            "matched_ajio_url":    matched_ajio_url,
-            "matched_amazon_url":  matched_amazon_url,
-            "tenxyou_match_score": t_score,
-            "myntra_match_score":  m_score,
-            "ajio_match_score":    a_score,
-            "amazon_match_score":  az_score,
-            "status":              status,
-        })
+                tenxyou_price, matched_tenxyou_url = await _scrape_lowest(
+                    tenxyou_browser, tenxyou_urls, scrape_tenxyou_price_with_page
+                )
+                myntra_price, matched_myntra_url = await _scrape_lowest(
+                    myntra_browser, myntra_urls, scrape_myntra_price_with_page,
+                    sku=sku, debug_label="MYNTRA",
+                )
+                amazon_price, matched_amazon_url = await _scrape_lowest(
+                    amazon_context, amazon_urls, scrape_amazon_price_with_page
+                )
+                ajio_price, matched_ajio_url = _lookup_ajio_lowest(ajio_urls, ajio_by_url)
+
+                print(
+                    f"  {sku:<12} T={tenxyou_price} M={myntra_price} A={ajio_price} AZ={amazon_price}",
+                    flush=True,
+                )
+
+                results.append({
+                    "sku":                 sku,
+                    "name":                name,
+                    "tenxyou_price":       tenxyou_price,
+                    "myntra_price":        myntra_price,
+                    "ajio_price":          ajio_price,
+                    "amazon_price":        amazon_price,
+                    "matched_tenxyou_url": matched_tenxyou_url,
+                    "matched_myntra_url":  matched_myntra_url,
+                    "matched_ajio_url":    matched_ajio_url,
+                    "matched_amazon_url":  matched_amazon_url,
+                    "tenxyou_has_url":     bool(tenxyou_urls),
+                    "myntra_has_url":      bool(myntra_urls),
+                    "ajio_has_url":        bool(ajio_urls),
+                    "amazon_has_url":      bool(amazon_urls),
+                    "myntra_fuzzy_match":  False,
+                    "ajio_fuzzy_match":    False,
+                    "amazon_fuzzy_match":  False,
+                })
+        finally:
+            await tenxyou_browser.close()
+            await myntra_browser.close()
+            await amazon_browser.close()
+
+    mapped_urls = {
+        "myntra": {_norm_url(u) for e in url_mapping.values() for u in e["myntra"]},
+        "ajio":   {_norm_url(u) for e in url_mapping.values() for u in e["ajio"]},
+        "amazon": {_norm_url(u) for e in url_mapping.values() for u in e["amazon"]},
+    }
+    _apply_supplementary_fuzzy_matching(results, raw_myntra, raw_ajio, raw_amazon, mapped_urls)
+
+    for r in results:
+        comp_prices = [p for p in [r["myntra_price"], r["ajio_price"], r["amazon_price"]] if p is not None]
+        r["lowest_comp_price"] = min(comp_prices) if comp_prices else None
+        r["status"] = _compute_status(r)
 
     return results
 
@@ -348,7 +478,8 @@ def export():
         fieldnames=["sku", "name", "tenxyou_price", "myntra_price", "ajio_price", "amazon_price",
                     "lowest_comp_price",
                     "matched_tenxyou_url", "matched_myntra_url", "matched_ajio_url", "matched_amazon_url",
-                    "tenxyou_match_score", "myntra_match_score", "ajio_match_score", "amazon_match_score",
+                    "tenxyou_has_url", "myntra_has_url", "ajio_has_url", "amazon_has_url",
+                    "myntra_fuzzy_match", "ajio_fuzzy_match", "amazon_fuzzy_match",
                     "status"],
         extrasaction="ignore",
     )

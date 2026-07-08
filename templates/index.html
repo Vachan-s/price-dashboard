@@ -190,9 +190,28 @@
       font-size: 0.78rem;
       font-weight: 600;
     }
-    .status-success { background: #dcfce7; color: #15803d; }
-    .status-partial { background: #fef9c3; color: #854d0e; }
-    .status-error   { background: #fee2e2; color: #dc2626; }
+    .status-complete { background: #dcfce7; color: #15803d; }
+    .status-partial  { background: #fef9c3; color: #854d0e; }
+    .status-error    { background: #fee2e2; color: #dc2626; }
+
+    .na-cell {
+      color: #bbb;
+      font-style: italic;
+    }
+
+    .fuzzy-tag {
+      display: inline-block;
+      margin-left: 4px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: #9333ea;
+      background: #f3e8ff;
+      border-radius: 4px;
+      padding: 1px 5px;
+      vertical-align: middle;
+    }
 
     #toast {
       position: fixed;
@@ -231,10 +250,8 @@
           <div class="spinner" id="spinner"></div>
           <span id="btn-scrape-label">Scrape Now</span>
         </button>
-        <p class="ajio-refresh-note">To update TenXYou prices, run <code>python scrapers/tenxyou_search.py</code> in terminal first.</p>
-        <p class="ajio-refresh-note">To update Myntra prices, run <code>python scrapers/myntra_search.py</code> in terminal first.</p>
-        <p class="ajio-refresh-note">To update Ajio prices, run <code>python scrapers/ajio_search.py</code> in terminal first.</p>
-        <p class="ajio-refresh-note">To update Amazon prices, run <code>python scrapers/amazon_search.py</code> in terminal first.</p>
+        <p class="ajio-refresh-note">Ajio prices loaded from cached search results. Run <code>python scrapers/ajio_search.py</code> to refresh.</p>
+        <p class="ajio-refresh-note">Run <code>python scrapers/amazon_search.py</code> to refresh Amazon prices.</p>
       </div>
       <button id="btn-export">Export CSV</button>
     </div>
@@ -297,12 +314,17 @@
     catch(e) { return '₹' + Number(num).toLocaleString(); }
   }
 
-  function priceCell(num, minPrice) {
-    if (num === null || num === undefined) return '<span style="color:#aaa">—</span>';
+  function priceCell(num, minPrice, hasUrl, isFuzzy) {
+    if (num === null || num === undefined) {
+      return hasUrl ? '<span style="color:#aaa">—</span>' : '<span class="na-cell">N/A</span>';
+    }
     const fmt = formatPrice(num);
-    return (minPrice !== null && num === minPrice)
+    const priceHtml = (minPrice !== null && num === minPrice)
       ? `<span class="lowest-badge">${fmt}</span>`
       : fmt;
+    return isFuzzy
+      ? `${priceHtml} <span class="fuzzy-tag" title="Matched by name similarity, not a direct URL mapping">fuzzy</span>`
+      : priceHtml;
   }
 
   function gapHtml(tenxyouPrice, lowestComp) {
@@ -326,11 +348,10 @@
     }
 
     tbody.innerHTML = rows.map(r => {
-      const statusCls = r.status === 'success' ? 'status-success'
-                      : r.status === 'partial'  ? 'status-partial'
-                      : 'status-error';
-      const statusIcon = r.status === 'success' ? '✓' : r.status === 'partial' ? '~' : '✗';
-      const statusHtml = `<span class="status-badge ${statusCls}">${statusIcon} ${r.status}</span>`;
+      const status = r.status === 'complete' ? { cls: 'status-complete', icon: '✓', label: 'complete' }
+                   : r.status === 'partial'  ? { cls: 'status-partial',  icon: '~', label: 'partial'  }
+                   :                           { cls: 'status-error',    icon: '✗', label: 'error'    };
+      const statusHtml = `<span class="status-badge ${status.cls}">${status.icon} ${status.label}</span>`;
 
       const name = r.name || '—';
       const sku  = r.sku  || '—';
@@ -345,15 +366,13 @@
       const allPrices = [tPrice, mPrice, aPrice, azPrice].filter(p => p !== null);
       const minPrice  = allPrices.length ? Math.min(...allPrices) : null;
 
-      const lowCompFmt = lowComp !== null ? formatPrice(lowComp) : '—';
-
       return `<tr>
         <td><span class="sku-badge">${sku}</span></td>
         <td>${name}</td>
-        <td>${priceCell(tPrice, minPrice)}</td>
-        <td>${priceCell(mPrice, minPrice)}</td>
-        <td>${priceCell(aPrice, minPrice)}</td>
-        <td>${priceCell(azPrice, minPrice)}</td>
+        <td>${priceCell(tPrice, minPrice, r.tenxyou_has_url, false)}</td>
+        <td>${priceCell(mPrice, minPrice, r.myntra_has_url, r.myntra_fuzzy_match)}</td>
+        <td>${priceCell(aPrice, minPrice, r.ajio_has_url, r.ajio_fuzzy_match)}</td>
+        <td>${priceCell(azPrice, minPrice, r.amazon_has_url, r.amazon_fuzzy_match)}</td>
         <td>${gapHtml(tPrice, lowComp)}</td>
         <td>${statusHtml}</td>
       </tr>`;
