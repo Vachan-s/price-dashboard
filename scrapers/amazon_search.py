@@ -6,6 +6,7 @@ import re
 import sys
 from urllib.parse import parse_qs, unquote, urlparse
 
+import openpyxl
 from playwright.async_api import async_playwright
 
 # Ensure project root is on sys.path so imports/paths work from any CWD
@@ -19,6 +20,7 @@ RESULTS_PATH    = os.path.join(_ROOT, "data", "amazon_search_results.json")
 SCREENSHOT_PATH = os.path.join(_ROOT, "data", "amazon_debug_screenshot.png")
 SEARCH_SCREENSHOT_PATH = os.path.join(_ROOT, "data", "amazon_debug_screenshot_search.png")
 LOG_PATH        = os.path.join(_ROOT, "data", "debug_scrape.log")
+URL_MAPPING_PATH = os.path.join(_ROOT, "data", "url_mapping.xlsx")
 
 SEARCH_ITEM_SELECTOR = 'div[data-component-type="s-search-result"]'
 
@@ -147,12 +149,52 @@ def _asin(url: str) -> str:
     return m.group(1) if m else url
 
 
-RELEVANCE_TERMS = ["ten x you", "sachin tendulkar", "xu0", "xm", "xw", "xa"]
+def _load_known_amazon_asins() -> set:
+    """Load confirmed TenXYou ASINs from data/url_mapping.xlsx's AMAZON column —
+    the ground-truth source of known-good Amazon listings for this brand."""
+    asins = set()
+    if not os.path.exists(URL_MAPPING_PATH):
+        return asins
+    try:
+        wb = openpyxl.load_workbook(URL_MAPPING_PATH, data_only=True)
+        ws = wb.active
+        headers = [c.value for c in ws[1]]
+        if "AMAZON" not in headers:
+            return asins
+        col = headers.index("AMAZON")
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            cell = row[col]
+            if not cell:
+                continue
+            for part in str(cell).split(","):
+                m = re.search(r"/dp/([A-Z0-9]{10})", part)
+                if m:
+                    asins.add(m.group(1))
+    except Exception as e:
+        logger.error(f"Error loading known ASINs from {URL_MAPPING_PATH}: {e}")
+    return asins
 
 
-def _is_relevant(name: str) -> bool:
+LOOSE_RELEVANCE_TERMS = [
+    "ten x you", "sachin tendulkar", "xu0", "xm1", "xw1", "xa1",
+    "unisex reset", "unisex pivot", "unisex crossover", "unisex aeonic",
+    "unisex zenflo", "unisex sundowner", "unisex switch", "unisex nox",
+    "centurion", "youngstar",
+]
+
+
+def _matches_loose_terms(name: str) -> bool:
     lowered = (name or "").lower()
-    return any(term in lowered for term in RELEVANCE_TERMS)
+    return any(term in lowered for term in LOOSE_RELEVANCE_TERMS)
+
+
+def _is_known_tenxyou_product(prod: dict, known_asins: set) -> bool:
+    """A product counts as a genuine TenXYou listing if its ASIN is already
+    confirmed in url_mapping.xlsx, or — for ASINs not yet mapped — if its name
+    matches one of the known TenXYou product-line/brand terms."""
+    if _asin(prod.get("url", "")) in known_asins:
+        return True
+    return _matches_loose_terms(prod.get("name", ""))
 
 
 async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
@@ -200,19 +242,8 @@ async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
                     continue
 
                 page_products = await _extract_search_results(page)
-
-                if page_num == 2:
-                    # Page 1 is trusted wholesale (all 48 confirmed TenXYou);
-                    # page 2 drifts into unrelated results, so keep only names
-                    # that look relevant, or ASINs already seen on page 1.
-                    known_asins = {_asin(p["url"]) for p in all_products}
-                    page_products = [
-                        p for p in page_products
-                        if _is_relevant(p.get("name", "")) or _asin(p["url"]) in known_asins
-                    ]
-
                 page_counts.append((page_num, len(page_products)))
-                logger.info(f"Page {page_num}: {len(page_products)} products (after filtering)")
+                logger.info(f"Page {page_num}: {len(page_products)} products")
 
                 for prod in page_products:
                     logger.info(f"{prod['name']} | {prod['price']} | {prod['url']}")
@@ -233,6 +264,13 @@ async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
             seen.add(key)
             products.append(prod)
 
+    known_asins = _load_known_amazon_asins()
+    logger.info(f"Loaded {len(known_asins)} known TenXYou ASINs from {URL_MAPPING_PATH}")
+
+    before_relevance_filter = len(products)
+    products = [p for p in products if _is_known_tenxyou_product(p, known_asins)]
+    logger.info(f"Relevance filter: kept {len(products)} of {before_relevance_filter}")
+
     before_price_filter = len(products)
     products = [p for p in products if p.get("price") != "Not found"]
     no_price_removed = before_price_filter - len(products)
@@ -241,9 +279,12 @@ async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
         json.dump(products, f, indent=2, ensure_ascii=False)
 
     for page_num, count in page_counts:
-        logger.info(f"Page {page_num}: {count} products (after filtering)")
+        logger.info(f"Page {page_num}: {count} products (raw)")
     logger.info(f"Removed {no_price_removed} products with no price found")
     logger.info(f"Total unique: {len(products)} products. Saved to {RESULTS_PATH}")
+    logger.info("First 5 products:")
+    for prod in products[:5]:
+        logger.info(f"  {prod['name']}")
 
     return products
 
