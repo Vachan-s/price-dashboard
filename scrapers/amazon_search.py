@@ -142,8 +142,24 @@ async def _extract_search_results(page) -> list:
     return products
 
 
+def _asin(url: str) -> str:
+    m = re.search(r"/dp/([A-Z0-9]{10})", url)
+    return m.group(1) if m else url
+
+
+RELEVANCE_TERMS = ["ten x you", "sachin tendulkar", "xu0", "xm", "xw", "xa"]
+
+
+def _is_relevant(name: str) -> bool:
+    lowered = (name or "").lower()
+    return any(term in lowered for term in RELEVANCE_TERMS)
+
+
 async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
-    products = []
+    """Scrape exactly 2 pages of Amazon search results (?page=1, ?page=2),
+    combine, and deduplicate by ASIN."""
+    all_products = []
+    page_counts = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -157,51 +173,78 @@ async def scrape_amazon_search_page(search_url: str = SEARCH_URL) -> list:
         page = await context.new_page()
 
         try:
-            logger.info(f"Navigating to {search_url}")
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+            for page_num in (1, 2):
+                paged_url = f"{search_url}&page={page_num}"
+                logger.info(f"Navigating to {paged_url}")
+                await page.goto(paged_url, wait_until="domcontentloaded", timeout=30000)
 
-            try:
-                await page.wait_for_load_state("networkidle", timeout=20000)
-            except Exception:
-                logger.info("Network did not go fully idle within timeout, continuing anyway")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                except Exception:
+                    logger.info("Network did not go fully idle within timeout, continuing anyway")
 
-            await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(2000)
 
-            os.makedirs(os.path.dirname(SEARCH_SCREENSHOT_PATH), exist_ok=True)
-            await page.screenshot(path=SEARCH_SCREENSHOT_PATH, full_page=True)
-            logger.info(f"Saved debug screenshot to {SEARCH_SCREENSHOT_PATH}")
+                screenshot_path = SEARCH_SCREENSHOT_PATH.replace(".png", f"_page{page_num}.png")
+                os.makedirs(os.path.dirname(screenshot_path), exist_ok=True)
+                await page.screenshot(path=screenshot_path, full_page=True)
+                logger.info(f"Saved debug screenshot to {screenshot_path}")
 
-            content = (await page.content()).lower()
-            if any(marker in content for marker in CAPTCHA_MARKERS):
-                logger.error(
-                    "CAPTCHA / bot-check page detected on Amazon search results page - not retrying. "
-                    f"See {SEARCH_SCREENSHOT_PATH} to inspect what rendered."
-                )
-                return []
+                content = (await page.content()).lower()
+                if any(marker in content for marker in CAPTCHA_MARKERS):
+                    logger.error(
+                        f"CAPTCHA / bot-check page detected on Amazon search page {page_num} - not retrying. "
+                        f"See {screenshot_path} to inspect what rendered."
+                    )
+                    page_counts.append((page_num, 0))
+                    continue
 
-            products = await _extract_search_results(page)
+                page_products = await _extract_search_results(page)
 
-            if not products:
-                logger.error(
-                    "No search result content found on Amazon (blocked or empty) - not retrying. "
-                    f"See {SEARCH_SCREENSHOT_PATH} to inspect what rendered."
-                )
-                return []
+                if page_num == 2:
+                    # Page 1 is trusted wholesale (all 48 confirmed TenXYou);
+                    # page 2 drifts into unrelated results, so keep only names
+                    # that look relevant, or ASINs already seen on page 1.
+                    known_asins = {_asin(p["url"]) for p in all_products}
+                    page_products = [
+                        p for p in page_products
+                        if _is_relevant(p.get("name", "")) or _asin(p["url"]) in known_asins
+                    ]
 
-            for prod in products:
-                logger.info(f"{prod['name']} | {prod['price']} | {prod['url']}")
+                page_counts.append((page_num, len(page_products)))
+                logger.info(f"Page {page_num}: {len(page_products)} products (after filtering)")
+
+                for prod in page_products:
+                    logger.info(f"{prod['name']} | {prod['price']} | {prod['url']}")
+
+                all_products.extend(page_products)
 
         except Exception as e:
-            logger.error(f"Error scraping Amazon search results page: {e}")
-            return []
+            logger.error(f"Error scraping Amazon search results: {e}")
 
         finally:
             await browser.close()
 
+    seen = set()
+    products = []
+    for prod in all_products:
+        key = _asin(prod["url"])
+        if key not in seen:
+            seen.add(key)
+            products.append(prod)
+
+    before_price_filter = len(products)
+    products = [p for p in products if p.get("price") != "Not found"]
+    no_price_removed = before_price_filter - len(products)
+
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(products, f, indent=2, ensure_ascii=False)
 
-    logger.info(f"Scraped {len(products)} products. Saved to {RESULTS_PATH}")
+    for page_num, count in page_counts:
+        logger.info(f"Page {page_num}: {count} products (after filtering)")
+    logger.info(f"Removed {no_price_removed} products with no price found")
+    logger.info(f"Total unique: {len(products)} products. Saved to {RESULTS_PATH}")
+
     return products
 
 

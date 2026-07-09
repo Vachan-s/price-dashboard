@@ -8,7 +8,11 @@ async def scrape_tenxyou_price_with_page(page, url: str) -> dict:
     await page.set_extra_http_headers({"User-Agent": _USER_AGENT})
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(2000)
+
+        try:
+            await page.wait_for_selector("span.price", timeout=15000)
+        except Exception:
+            return {"url": url, "name": None, "price": "Not found", "status": "error"}
 
         price_el = await page.query_selector("span.price")
         price = await price_el.inner_text() if price_el else "Not found"

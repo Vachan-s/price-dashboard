@@ -246,14 +246,20 @@ async def _scrape_one(sem: asyncio.Semaphore, browser, scrape_fn, sku: str, url:
     Returns (sku, url, price) — price is None on any failure."""
     async with sem:
         page = await browser.new_page()
+        result = None
         try:
             result = await scrape_fn(page, url)
             price = _normalize_price(result.get("price")) if result.get("status") == "success" else None
         except Exception as e:
             print(f"[SCRAPE ERROR] {url}: {e}", flush=True)
             price = None
+            result = {"status": f"exception: {e}"}
         finally:
             await page.close()
+
+        if price is None:
+            print(f"[SCRAPE FAIL] platform={scrape_fn.__name__} sku={sku} url={url} result={result}", flush=True)
+
         return sku, url, price
 
 
@@ -261,6 +267,7 @@ async def _scrape_all_lowest(sem: asyncio.Semaphore, browser, scrape_fn, sku_url
     """Scrape every (sku, url) pair concurrently (bounded by sem) and reduce to
     {sku: (lowest_price, matched_url)} — SKUs with no successful price are omitted.
     Used for Myntra/TenXYou individual-page scraping (asyncio.gather + semaphore)."""
+    print(f"[SCRAPE_ALL_LOWEST] platform={scrape_fn.__name__} pairs={len(sku_url_pairs)}", flush=True)
     if not sku_url_pairs:
         return {}
     outcomes = await asyncio.gather(
