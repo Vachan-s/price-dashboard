@@ -110,6 +110,31 @@
       overflow: hidden;
     }
 
+    .search-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    #search-input {
+      flex: 1;
+      max-width: 320px;
+      padding: 8px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #search-input:focus { border-color: #4f46e5; }
+    #search-count {
+      font-size: 0.82rem;
+      color: #888;
+      white-space: nowrap;
+    }
+
     .table-wrapper {
       overflow-y: auto;
       max-height: 72vh;
@@ -177,8 +202,8 @@
       font-size: 0.8rem;
       font-weight: 700;
     }
-    .gap-positive { background: #fee2e2; color: #dc2626; }
-    .gap-negative { background: #dcfce7; color: #15803d; }
+    .gap-positive { background: #dcfce7; color: #15803d; }
+    .gap-negative { background: #fee2e2; color: #dc2626; }
     .gap-neutral  { background: #f1f5f9; color: #888; }
 
     .status-badge {
@@ -262,6 +287,10 @@
       <strong>No results yet</strong>
       <p>Click "Scrape Now" to fetch the latest prices.</p>
     </div>
+    <div class="search-bar" id="search-bar" style="display:none;">
+      <input type="text" id="search-input" placeholder="Search by SKU or product name…" />
+      <span id="search-count"></span>
+    </div>
     <div class="table-wrapper">
     <table id="results-table" style="display:none;">
       <thead>
@@ -285,16 +314,21 @@
 <div id="toast"></div>
 
 <script>
-  const btnScrape = document.getElementById('btn-scrape');
-  const btnExport = document.getElementById('btn-export');
-  const spinner   = document.getElementById('spinner');
-  const label     = document.getElementById('btn-scrape-label');
-  const tbody     = document.getElementById('results-body');
-  const table     = document.getElementById('results-table');
-  const empty     = document.getElementById('empty-state');
-  const statCount = document.getElementById('stat-count');
-  const statTime  = document.getElementById('stat-time');
-  const toast     = document.getElementById('toast');
+  const btnScrape   = document.getElementById('btn-scrape');
+  const btnExport   = document.getElementById('btn-export');
+  const spinner     = document.getElementById('spinner');
+  const label       = document.getElementById('btn-scrape-label');
+  const tbody       = document.getElementById('results-body');
+  const table       = document.getElementById('results-table');
+  const empty       = document.getElementById('empty-state');
+  const statCount   = document.getElementById('stat-count');
+  const statTime    = document.getElementById('stat-time');
+  const toast       = document.getElementById('toast');
+  const searchBar   = document.getElementById('search-bar');
+  const searchInput = document.getElementById('search-input');
+  const searchCount = document.getElementById('search-count');
+
+  let currentRows = [];
 
   function showToast(msg, duration = 3000) {
     toast.textContent = msg;
@@ -336,49 +370,71 @@
     return `<span class="gap-badge ${cls}">${sign}${pct}%</span>`;
   }
 
+  function rowHtml(r) {
+    const status = r.status === 'complete' ? { cls: 'status-complete', icon: '✓', label: 'complete' }
+                 : r.status === 'partial'  ? { cls: 'status-partial',  icon: '~', label: 'partial'  }
+                 :                           { cls: 'status-error',    icon: '✗', label: 'error'    };
+    const statusHtml = `<span class="status-badge ${status.cls}">${status.icon} ${status.label}</span>`;
+
+    const name = r.name || '—';
+    const sku  = r.sku  || '—';
+
+    const tPrice  = r.tenxyou_price    ?? null;
+    const mPrice  = r.myntra_price     ?? null;
+    const aPrice  = r.ajio_price       ?? null;
+    const azPrice = r.amazon_price     ?? null;
+    const lowComp = r.lowest_comp_price ?? null;
+
+    // Find lowest non-null price across all four for green highlight
+    const allPrices = [tPrice, mPrice, aPrice, azPrice].filter(p => p !== null);
+    const minPrice  = allPrices.length ? Math.min(...allPrices) : null;
+
+    return `<tr>
+      <td><span class="sku-badge">${sku}</span></td>
+      <td>${name}</td>
+      <td>${priceCell(tPrice, minPrice, r.tenxyou_has_url, r.tenxyou_fuzzy_match)}</td>
+      <td>${priceCell(mPrice, minPrice, r.myntra_has_url, r.myntra_fuzzy_match)}</td>
+      <td>${priceCell(aPrice, minPrice, r.ajio_has_url, r.ajio_fuzzy_match)}</td>
+      <td>${priceCell(azPrice, minPrice, r.amazon_has_url, r.amazon_fuzzy_match)}</td>
+      <td>${gapHtml(tPrice, lowComp)}</td>
+      <td>${statusHtml}</td>
+    </tr>`;
+  }
+
+  function applySearch() {
+    const query = searchInput.value.trim().toLowerCase();
+    const filtered = query
+      ? currentRows.filter(r =>
+          (r.sku || '').toLowerCase().includes(query) ||
+          (r.name || '').toLowerCase().includes(query))
+      : currentRows;
+
+    searchCount.textContent = query
+      ? `${filtered.length} of ${currentRows.length} match${currentRows.length !== 1 ? 'es' : ''}`
+      : '';
+
+    tbody.innerHTML = filtered.length
+      ? filtered.map(rowHtml).join('')
+      : `<tr><td colspan="8" style="text-align:center;color:#888;padding:24px;">No matching results</td></tr>`;
+  }
+
   function renderResults(data) {
     const rows = data.results || [];
+    currentRows = rows;
     statCount.textContent = rows.length;
     statTime.textContent  = formatTimestamp(data.timestamp);
 
     if (rows.length === 0) {
       table.style.display = 'none';
+      searchBar.style.display = 'none';
       empty.style.display = '';
       return;
     }
 
-    tbody.innerHTML = rows.map(r => {
-      const status = r.status === 'complete' ? { cls: 'status-complete', icon: '✓', label: 'complete' }
-                   : r.status === 'partial'  ? { cls: 'status-partial',  icon: '~', label: 'partial'  }
-                   :                           { cls: 'status-error',    icon: '✗', label: 'error'    };
-      const statusHtml = `<span class="status-badge ${status.cls}">${status.icon} ${status.label}</span>`;
-
-      const name = r.name || '—';
-      const sku  = r.sku  || '—';
-
-      const tPrice  = r.tenxyou_price    ?? null;
-      const mPrice  = r.myntra_price     ?? null;
-      const aPrice  = r.ajio_price       ?? null;
-      const azPrice = r.amazon_price     ?? null;
-      const lowComp = r.lowest_comp_price ?? null;
-
-      // Find lowest non-null price across all four for green highlight
-      const allPrices = [tPrice, mPrice, aPrice, azPrice].filter(p => p !== null);
-      const minPrice  = allPrices.length ? Math.min(...allPrices) : null;
-
-      return `<tr>
-        <td><span class="sku-badge">${sku}</span></td>
-        <td>${name}</td>
-        <td>${priceCell(tPrice, minPrice, r.tenxyou_has_url, r.tenxyou_fuzzy_match)}</td>
-        <td>${priceCell(mPrice, minPrice, r.myntra_has_url, r.myntra_fuzzy_match)}</td>
-        <td>${priceCell(aPrice, minPrice, r.ajio_has_url, r.ajio_fuzzy_match)}</td>
-        <td>${priceCell(azPrice, minPrice, r.amazon_has_url, r.amazon_fuzzy_match)}</td>
-        <td>${gapHtml(tPrice, lowComp)}</td>
-        <td>${statusHtml}</td>
-      </tr>`;
-    }).join('');
+    applySearch();
 
     empty.style.display = 'none';
+    searchBar.style.display = '';
     table.style.display = '';
   }
 
@@ -415,6 +471,8 @@
   btnExport.addEventListener('click', () => {
     window.location.href = '/export';
   });
+
+  searchInput.addEventListener('input', applySearch);
 
   loadExisting();
 </script>

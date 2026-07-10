@@ -6,6 +6,9 @@ __pycache__/
 # generated data — never commit live results or cache files
 data/results.json
 data/*.json
+data/*.png
+data/debug.log
+data/*_run.log
 data/~$*.xlsx
 
 # local cache / tooling
