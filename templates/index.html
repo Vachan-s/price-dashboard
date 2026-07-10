@@ -73,19 +73,6 @@
     }
     #btn-scrape:hover:not(:disabled) { opacity: 0.88; }
 
-    .ajio-refresh-note {
-      font-size: 0.78rem;
-      color: #888;
-      margin-top: 6px;
-    }
-    .ajio-refresh-note code {
-      background: #f0f2f5;
-      border-radius: 4px;
-      padding: 1px 5px;
-      font-family: monospace;
-      color: #555;
-    }
-
     #btn-export {
       background: #fff;
       color: #4f46e5;
@@ -275,8 +262,6 @@
           <div class="spinner" id="spinner"></div>
           <span id="btn-scrape-label">Scrape Now</span>
         </button>
-        <p class="ajio-refresh-note">Ajio prices loaded from cached search results. Run <code>python scrapers/ajio_search.py</code> to refresh.</p>
-        <p class="ajio-refresh-note">Run <code>python scrapers/amazon_search.py</code> to refresh Amazon prices.</p>
       </div>
       <button id="btn-export">Export CSV</button>
     </div>
@@ -450,7 +435,7 @@
     btnScrape.disabled = true;
     btnExport.disabled = true;
     spinner.style.display = 'block';
-    label.textContent = 'Scraping…';
+    label.textContent = 'Running... (this may take 10-15 mins)';
 
     try {
       const res  = await fetch('/scrape', { method: 'POST' });

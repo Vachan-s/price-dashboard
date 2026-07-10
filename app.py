@@ -13,7 +13,8 @@ import openpyxl
 from flask import Flask, jsonify, make_response, render_template
 from playwright.async_api import async_playwright
 
-from scrapers.amazon_search import scrape_amazon_price_with_page
+from scrapers.ajio_search import scrape_ajio_search
+from scrapers.amazon_search import scrape_amazon_price_with_page, scrape_amazon_search_page
 from scrapers.myntra import scrape_myntra_price_with_page
 from scrapers.tenxyou import scrape_tenxyou_price_with_page
 from scrapers.tenxyou_search import _product_key as _tenxyou_base_slug
@@ -396,6 +397,18 @@ def _compute_status(r: dict) -> str:
     return "error"
 
 
+async def _run_full_scrape(rows: list) -> list:
+    """Refresh the Ajio and Amazon search-result caches (concurrently — each
+    saves to its own JSON file), then run the main per-SKU scrape, which reads
+    prices from those freshly saved files."""
+    print("[SCRAPE] Refreshing Ajio and Amazon caches...", flush=True)
+    await asyncio.gather(
+        scrape_ajio_search(),
+        scrape_amazon_search_page(),
+    )
+    return await _run_scrape(rows)
+
+
 async def _run_scrape(rows: list) -> list:
     """rows: [(sku, name), ...] from sku_mapping.xlsx — used as a display-name
     fallback and to pick up any SKUs that aren't in url_mapping.xlsx at all."""
@@ -543,7 +556,7 @@ def scrape():
             continue
         rows.append((sku, (row[name_col] or "").strip()))
 
-    results = asyncio.run(_run_scrape(rows))
+    results = asyncio.run(_run_full_scrape(rows))
 
     output = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
