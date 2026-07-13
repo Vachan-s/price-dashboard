@@ -367,6 +367,16 @@ async def scrape_amazon_price_with_page(page, url: str) -> dict:
         if any(marker in content for marker in CAPTCHA_MARKERS):
             return {"url": url, "name": None, "price": None, "status": "error: captcha"}
 
+        # Scoped to Amazon's dedicated #availability element rather than the whole
+        # page: "currently unavailable" also shows up in generic JS translation
+        # strings and other-swatch status text on virtually every multi-variant
+        # listing, which false-positives a page-wide substring search even for
+        # products that are genuinely in stock and correctly priced.
+        availability_el = await page.query_selector("#availability")
+        availability_text = (await availability_el.inner_text()).strip().lower() if availability_el else ""
+        if "currently unavailable" in availability_text or "temporarily out of stock" in availability_text:
+            return {"url": url, "name": None, "price": None, "status": "unavailable"}
+
         name_el = await page.query_selector("#productTitle")
         name = (await name_el.inner_text()).strip() if name_el else "Not found"
 

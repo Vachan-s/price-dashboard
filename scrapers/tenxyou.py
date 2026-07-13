@@ -3,6 +3,23 @@ from playwright.async_api import async_playwright
 
 _USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# TenXYou swaps its "Buy Now" / "Add to Kit" buttons for a "Notify Me" button
+# when a product is out of stock, rather than showing literal "sold out" /
+# "out of stock" text anywhere on the page (confirmed against a real OOS
+# listing) — checked alongside the literal phrases as a safety net.
+_OOS_BUTTON_MARKERS = ["notify me", "sold out", "out of stock"]
+
+
+async def _is_tenxyou_oos(page) -> bool:
+    """Check the buy-button area (not the whole page) for an out-of-stock
+    indicator, to avoid false positives from unrelated page text."""
+    buttons = await page.query_selector_all("button")
+    for b in buttons:
+        text = (await b.inner_text()).strip().lower()
+        if any(marker in text for marker in _OOS_BUTTON_MARKERS):
+            return True
+    return False
+
 
 async def scrape_tenxyou_price_with_page(page, url: str) -> dict:
     await page.set_extra_http_headers({"User-Agent": _USER_AGENT})
@@ -19,6 +36,9 @@ async def scrape_tenxyou_price_with_page(page, url: str) -> dict:
 
         name_el = await page.query_selector("h1")
         name = await name_el.inner_text() if name_el else "Not found"
+
+        if await _is_tenxyou_oos(page):
+            return {"url": url, "name": name, "price": None, "status": "unavailable"}
 
         return {"url": url, "name": name, "price": price, "status": "success"}
 

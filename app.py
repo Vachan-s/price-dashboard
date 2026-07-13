@@ -29,7 +29,6 @@ if sys.platform == "win32":
 
 app = Flask(__name__)
 
-XLSX_PATH        = "data/sku_mapping.xlsx"
 URL_MAPPING_PATH = "data/url_mapping.xlsx"
 RESULTS_PATH     = "data/results.json"
 
@@ -40,6 +39,12 @@ AMAZON_USER_AGENT = (
 
 FUZZY_MATCH_THRESHOLD = 0.6
 SCRAPE_CONCURRENCY    = 5
+
+# SKUs that should never be fuzzy-matched for a given platform, because a past
+# match was confirmed wrong (generic word overlap, not the same product).
+FUZZY_MATCH_EXCLUDED_SKUS = {
+    "myntra": {"XU019"},  # matched "Ten x You Men Cricket Shoes" (All-Rounder) — wrong product, XU019 is Youngstar
+}
 
 # ── Price helpers ────────────────────────────────────────────────────────────
 
@@ -149,9 +154,10 @@ def _split_urls(cell) -> list[str]:
 
 
 def _load_url_mapping() -> dict:
-    """Load data/url_mapping.xlsx into {SKU: {display_name, tenxyou, amazon, ajio, myntra}}.
-    A SKU may span multiple rows (e.g. several TenXYou style variants sharing one
-    SKU) — URLs from every matching row are pooled together into that SKU's lists."""
+    """Load data/url_mapping.xlsx into {(row_index, SKU, TenXYou Display Name):
+    {sku, display_name, tenxyou, amazon, ajio, myntra}}. Every row is its own
+    entry, regardless of duplicate SKUs or display names — the dashboard shows
+    one row per sheet row, never merged/pooled together."""
     mapping: dict = {}
     if not os.path.exists(URL_MAPPING_PATH):
         return mapping
@@ -160,58 +166,27 @@ def _load_url_mapping() -> dict:
         ws = wb.active
         headers = [c.value for c in ws[1]]
         col = {h: i for i, h in enumerate(headers)}
-        for row in ws.iter_rows(min_row=2, values_only=True):
+        for row_index, row in enumerate(ws.iter_rows(min_row=2, values_only=True)):
             sku = row[col["SKU"]]
             if not sku:
                 continue
             sku = str(sku).strip()
             if not sku:
                 continue
-            entry = mapping.setdefault(sku, {
-                "display_name": "",
-                "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
-            })
-            display_name = row[col["TenXYou Display Name"]]
-            if display_name and not entry["display_name"]:
-                entry["display_name"] = str(display_name).strip()
-            entry["tenxyou"].extend(_split_urls(row[col["TenXYou URL"]]))
-            entry["amazon"].extend(_split_urls(row[col["AMAZON"]]))
-            entry["ajio"].extend(_split_urls(row[col["AJIO"]]))
-            entry["myntra"].extend(_split_urls(row[col["MYNTRA"]]))
+            display_name = str(row[col["TenXYou Display Name"]] or "").strip()
+            key = (row_index, sku, display_name)
+            mapping[key] = {
+                "sku": sku,
+                "display_name": display_name,
+                "tenxyou": _split_urls(row[col["TenXYou URL"]]),
+                "amazon":  _split_urls(row[col["AMAZON"]]),
+                "ajio":    _split_urls(row[col["AJIO"]]),
+                "myntra":  _split_urls(row[col["MYNTRA"]]),
+            }
     except Exception as e:
         print(f"[URL MAPPING ERROR] {URL_MAPPING_PATH}: {e}", flush=True)
         return {}
     return mapping
-
-
-def _load_sku_mapping_fallback() -> dict:
-    """Load data/sku_mapping.xlsx as a fallback source for SKUs absent from
-    url_mapping.xlsx — its own Myntra/Ajio/TenXYou URL columns (there's no
-    Amazon column on this older sheet) become that SKU's scrape URLs."""
-    fallback: dict = {}
-    if not os.path.exists(XLSX_PATH):
-        return fallback
-    try:
-        wb = openpyxl.load_workbook(XLSX_PATH, data_only=True)
-        ws = wb.active
-        headers = [c.value for c in ws[1]]
-        col = {h: i for i, h in enumerate(headers)}
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            sku = row[col["SKU"]]
-            if not sku:
-                continue
-            sku = str(sku).strip()
-            fallback[sku] = {
-                "display_name": str(row[col["Product Name"]] or "").strip(),
-                "tenxyou": _split_urls(row[col["TenXYou URL"]]),
-                "amazon":  [],
-                "ajio":    _split_urls(row[col["Ajio URL"]]),
-                "myntra":  _split_urls(row[col["Myntra URL"]]),
-            }
-    except Exception as e:
-        print(f"[SKU MAPPING FALLBACK ERROR] {XLSX_PATH}: {e}", flush=True)
-        return {}
-    return fallback
 
 
 # ── Core async scrape ──────────────────────────────────────────────────────────
@@ -354,12 +329,15 @@ def _apply_supplementary_fuzzy_matching(results: list, raw_myntra: list, raw_ten
 
     for platform, raw_products, price_key, url_key, flag_key in platform_specs:
         excluded = excluded_urls.get(platform, set())
+        excluded_skus = FUZZY_MATCH_EXCLUDED_SKUS.get(platform, set())
         candidates_pool = [p for p in raw_products if _extract_stable_id(p.get("url", ""), platform) not in excluded]
         if not candidates_pool:
             continue
 
         for r in results:
             if r.get(price_key) is not None:
+                continue
+            if r.get("sku") in excluded_skus:
                 continue
             best_score, best_product = 0.0, None
             for p in candidates_pool:
@@ -397,7 +375,7 @@ def _compute_status(r: dict) -> str:
     return "error"
 
 
-async def _run_full_scrape(rows: list) -> list:
+async def _run_full_scrape() -> list:
     """Refresh the Ajio and Amazon search-result caches (concurrently — each
     saves to its own JSON file), then run the main per-SKU scrape, which reads
     prices from those freshly saved files."""
@@ -406,43 +384,34 @@ async def _run_full_scrape(rows: list) -> list:
         scrape_ajio_search(),
         scrape_amazon_search_page(),
     )
-    return await _run_scrape(rows)
+    return await _run_scrape()
 
 
-async def _run_scrape(rows: list) -> list:
-    """rows: [(sku, name), ...] from sku_mapping.xlsx — used as a display-name
-    fallback and to pick up any SKUs that aren't in url_mapping.xlsx at all."""
+async def _run_scrape() -> list:
+    """url_mapping.xlsx is the single source of truth. Each row (keyed by
+    SKU + TenXYou Display Name) becomes its own dashboard entry — a SKU that
+    spans multiple rows shows up as multiple separate results, not merged."""
     print("_RUN_SCRAPE CALLED", flush=True)
 
-    url_mapping  = _load_url_mapping()
-    sku_fallback = _load_sku_mapping_fallback()
-    sheet_names  = {sku: name for sku, name in rows}
+    url_mapping = _load_url_mapping()
 
     raw_ajio = _load_cache(AJIO_CACHE_PATH)
     ajio_by_id: dict = defaultdict(list)
     for p in raw_ajio:
         ajio_by_id[_extract_stable_id(p.get("url", ""), "ajio")].append(p)
 
-    print(f"[SCRAPE] URL mapping: {len(url_mapping)} SKUs loaded from {URL_MAPPING_PATH}", flush=True)
+    print(f"[SCRAPE] URL mapping: {len(url_mapping)} rows loaded from {URL_MAPPING_PATH}", flush=True)
     print(f"[SCRAPE] Ajio cache:  {len(raw_ajio)} products loaded from {AJIO_CACHE_PATH}", flush=True)
 
-    # url_mapping SKUs drive the loop; any sku_mapping-only SKU is appended as a fallback
-    ordered_skus = list(url_mapping.keys())
-    for sku in sheet_names:
-        if sku not in url_mapping:
-            ordered_skus.append(sku)
-
-    entries = {
-        sku: url_mapping.get(sku) or sku_fallback.get(sku) or {
-            "display_name": "", "tenxyou": [], "amazon": [], "ajio": [], "myntra": [],
-        }
-        for sku in ordered_skus
-    }
+    row_keys = list(url_mapping.keys())
+    entries = url_mapping
 
     # ── Primary: individual-page scraping. Myntra + TenXYou run concurrently
     # (bounded to SCRAPE_CONCURRENCY at a time); Amazon runs sequentially below.
-    myntra_pairs  = [(sku, u) for sku in ordered_skus for u in entries[sku]["myntra"]]
-    tenxyou_pairs = [(sku, u) for sku in ordered_skus for u in entries[sku]["tenxyou"]]
+    # Pairs are keyed by the (sku, display_name) row key, not bare sku, so each
+    # row's scrape stays separate even when several rows share a SKU.
+    myntra_pairs  = [(key, u) for key in row_keys for u in entries[key]["myntra"]]
+    tenxyou_pairs = [(key, u) for key in row_keys for u in entries[key]["tenxyou"]]
     sem = asyncio.Semaphore(SCRAPE_CONCURRENCY)
 
     async with async_playwright() as p:
@@ -464,17 +433,18 @@ async def _run_scrape(rows: list) -> list:
             )
 
             results = []
-            for sku in ordered_skus:
-                entry = entries[sku]
-                name = entry["display_name"] or sheet_names.get(sku, sku)
+            for key in row_keys:
+                entry = entries[key]
+                sku  = entry["sku"]
+                name = entry["display_name"] or sku
 
-                tenxyou_price, matched_tenxyou_url = tenxyou_best.get(sku, (None, None))
-                myntra_price,  matched_myntra_url  = myntra_best.get(sku, (None, None))
+                tenxyou_price, matched_tenxyou_url = tenxyou_best.get(key, (None, None))
+                myntra_price,  matched_myntra_url  = myntra_best.get(key, (None, None))
                 ajio_price,    matched_ajio_url    = _lookup_ajio_lowest(entry["ajio"], ajio_by_id)
                 amazon_price,  matched_amazon_url  = await _scrape_amazon_lowest(amazon_context, entry["amazon"])
 
                 print(
-                    f"  {sku:<12} T={tenxyou_price} M={myntra_price} A={ajio_price} AZ={amazon_price}",
+                    f"  {sku:<12} {name[:32]:<32} T={tenxyou_price} M={myntra_price} A={ajio_price} AZ={amazon_price}",
                     flush=True,
                 )
 
@@ -543,20 +513,7 @@ def index():
 @app.route("/scrape", methods=["POST"])
 def scrape():
     print("SCRAPE ROUTE CALLED", flush=True)
-    wb = openpyxl.load_workbook(XLSX_PATH)
-    ws = wb.active
-    headers = [cell.value for cell in ws[1]]
-    sku_col  = headers.index("SKU")
-    name_col = headers.index("Product Name")
-
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        sku = row[sku_col]
-        if not sku:
-            continue
-        rows.append((sku, (row[name_col] or "").strip()))
-
-    results = asyncio.run(_run_full_scrape(rows))
+    results = asyncio.run(_run_full_scrape())
 
     output = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
