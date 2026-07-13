@@ -26,3 +26,6 @@ env/
 
 # editor/local settings
 .claude/settings.local.json
+
+# local-only scripts
+upload_and_push.bat

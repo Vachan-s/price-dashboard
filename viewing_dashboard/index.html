@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TenXYou Price Dashboard (Viewer)</title>
+<style>
+  :root {
+    --success-bg: #dcfce7; --success-text: #16a34a;
+    --partial-bg: #fef9c3; --partial-text: #a16207;
+    --error-bg: #fee2e2;   --error-text: #dc2626;
+    --lowest-bg: #dcfce7;  --lowest-text: #15803d;
+    --gap-pos-bg: #dcfce7; --gap-pos-text: #16a34a;
+    --gap-neg-bg: #fee2e2; --gap-neg-text: #dc2626;
+    --header-bg: #0f172a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #f1f5f9; color: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  header {
+    background: var(--header-bg); color: #fff; padding: 18px 32px;
+    display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px;
+  }
+  .wrap { padding: 24px 32px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .pill {
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 999px;
+    padding: 8px 16px; font-size: 13px; color: #475569;
+  }
+  .pill b { color: #0f172a; }
+  .note {
+    color: #64748b; font-size: 13px; margin-top: 4px;
+  }
+  .search-box {
+    width: 100%; max-width: 420px; padding: 10px 14px; border: 1px solid #e2e8f0;
+    border-radius: 8px; font-size: 14px; margin-bottom: 16px; background: #fff;
+  }
+  .search-count { font-size: 13px; color: #64748b; margin-left: 8px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
+  thead th {
+    position: sticky; top: 0; z-index: 10; background: #f8fafc;
+    text-align: left; padding: 14px 16px; font-size: 12px; letter-spacing: .04em;
+    color: #475569; text-transform: uppercase; border-bottom: 1px solid #e2e8f0;
+  }
+  tbody td { padding: 14px 16px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
+  tbody tr:hover { background: #f8fafc; }
+  .sku-badge {
+    background: #f1f5f9; padding: 3px 8px; border-radius: 6px; font-family: monospace; font-size: 12px;
+  }
+  .price-lowest { background: var(--lowest-bg); color: var(--lowest-text); font-weight: 700; padding: 3px 8px; border-radius: 6px; }
+  .na { color: #cbd5e1; font-style: italic; }
+  .dash { color: #94a3b8; }
+  .gap-pos { background: var(--gap-pos-bg); color: var(--gap-pos-text); font-weight: 700; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+  .gap-neg { background: var(--gap-neg-bg); color: var(--gap-neg-text); font-weight: 700; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+  .gap-zero { background: #f1f5f9; color: #64748b; font-weight: 700; padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+  .status { padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .status-complete { background: var(--success-bg); color: var(--success-text); }
+  .status-partial  { background: var(--partial-bg); color: var(--partial-text); }
+  .status-error    { background: var(--error-bg);   color: var(--error-text); }
+  .export-btn {
+    border: 1px solid #6366f1; color: #6366f1; background: #fff; padding: 10px 20px;
+    border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 14px; text-decoration: none;
+  }
+  .export-btn:hover { background: #eef2ff; }
+</style>
+</head>
+<body>
+
+<header>📊 TenXYou Price Dashboard <span style="font-weight:400; font-size:13px; opacity:.75;">(read-only viewer)</span></header>
+
+<div class="wrap">
+  <div class="toolbar">
+    <div class="pill">SKUs shown: <b id="sku-count">–</b></div>
+    <div class="pill">Data last updated: <b id="last-updated">–</b></div>
+    <a class="export-btn" href="/export">⬇ Export CSV</a>
+  </div>
+  <div class="note">
+    This is a read-only viewer. Prices are refreshed weekly by the team and uploaded here — there is no live "Scrape Now" on this page.
+  </div>
+
+  <br>
+  <input class="search-box" id="search" type="text" placeholder="Search by SKU or product name...">
+  <span class="search-count" id="search-count"></span>
+
+  <table>
+    <thead>
+      <tr>
+        <th>SKU</th>
+        <th>Product Name</th>
+        <th>TenXYou Price</th>
+        <th>Myntra Price</th>
+        <th>Ajio Price</th>
+        <th>Amazon Price</th>
+        <th>Gap</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="table-body">
+      <tr><td colspan="8" style="text-align:center; padding:40px; color:#94a3b8;">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+let allResults = [];
+
+function fmtPrice(v) {
+  if (v === null || v === undefined) return '<span class="na">N/A</span>';
+  return '₹' + Number(v).toLocaleString('en-IN');
+}
+
+function priceCell(v, isLowest) {
+  const txt = fmtPrice(v);
+  if (v === null || v === undefined) return txt;
+  return isLowest ? `<span class="price-lowest">${txt}</span>` : txt;
+}
+
+function gapCell(r) {
+  const t = r.tenxyou_price, lc = r.lowest_comp_price;
+  if (t === null || t === undefined || lc === null || lc === undefined) {
+    return '<span class="dash">—</span>';
+  }
+  const pct = ((lc - t) / t) * 100;
+  const cls = pct > 0.05 ? 'gap-pos' : (pct < -0.05 ? 'gap-neg' : 'gap-zero');
+  const sign = pct > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${pct.toFixed(1)}%</span>`;
+}
+
+function statusBadge(status) {
+  const map = {
+    complete: ['status-complete', '✓ complete'],
+    partial:  ['status-partial',  '~ partial'],
+    error:    ['status-error',    '✗ error'],
+  };
+  const [cls, label] = map[status] || ['status-error', status];
+  return `<span class="status ${cls}">${label}</span>`;
+}
+
+function renderRows(rows) {
+  const tbody = document.getElementById('table-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:40px; color:#94a3b8;">No matching products.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const prices = [r.myntra_price, r.ajio_price, r.amazon_price, r.tenxyou_price].filter(p => p !== null && p !== undefined);
+    const lowest = prices.length ? Math.min(...prices) : null;
+    return `
+      <tr>
+        <td><span class="sku-badge">${r.sku}</span></td>
+        <td>${r.name}</td>
+        <td>${priceCell(r.tenxyou_price, r.tenxyou_price === lowest)}</td>
+        <td>${priceCell(r.myntra_price, r.myntra_price === lowest)}</td>
+        <td>${priceCell(r.ajio_price, r.ajio_price === lowest)}</td>
+        <td>${priceCell(r.amazon_price, r.amazon_price === lowest)}</td>
+        <td>${gapCell(r)}</td>
+        <td>${statusBadge(r.status)}</td>
+      </tr>`;
+  }).join('');
+}
+
+function applyFilter() {
+  const q = document.getElementById('search').value.trim().toLowerCase();
+  const filtered = !q ? allResults : allResults.filter(r =>
+    (r.sku || '').toLowerCase().includes(q) || (r.name || '').toLowerCase().includes(q)
+  );
+  document.getElementById('search-count').textContent = q ? `${filtered.length} of ${allResults.length} shown` : '';
+  renderRows(filtered);
+}
+
+document.getElementById('search').addEventListener('input', applyFilter);
+
+fetch('/results')
+  .then(r => r.json())
+  .then(data => {
+    allResults = data.results || [];
+    document.getElementById('sku-count').textContent = allResults.length;
+    document.getElementById('last-updated').textContent = data.timestamp
+      ? new Date(data.timestamp).toLocaleString()
+      : 'No data yet';
+    renderRows(allResults);
+  })
+  .catch(() => {
+    document.getElementById('table-body').innerHTML =
+      '<tr><td colspan="8" style="text-align:center; padding:40px; color:#dc2626;">Could not load results.json</td></tr>';
+  });
+</script>
+
+</body>
+</html>
